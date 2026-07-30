@@ -18,6 +18,7 @@ type Model struct {
 	scope             provider.Scope
 	mrs               []provider.MergeRequest
 	cursor            int
+	scroll            int // Scroll offset for MR list
 	loading           bool
 	err               error
 	cache             *cache.Cache
@@ -572,9 +573,44 @@ func (m Model) renderMRList() string {
 		return emptyStyle.Render("No merge requests found")
 	}
 
+	// Calculate visible area - each MR takes ~4 lines (status, title, meta, spacing)
+	linesPerMR := 4
+	visibleMRs := (m.height - 15) / linesPerMR // Account for header, tabs, status, help
+	if visibleMRs < 1 {
+		visibleMRs = 1
+	}
+
+	// Calculate scroll offset to keep cursor visible
+	if m.cursor < m.scroll {
+		m.scroll = m.cursor
+	} else if m.cursor >= m.scroll+visibleMRs {
+		m.scroll = m.cursor - visibleMRs + 1
+	}
+
+	// Calculate which MRs to show
+	startIdx := m.scroll
+	endIdx := m.scroll + visibleMRs
+	if endIdx > len(m.mrs) {
+		endIdx = len(m.mrs)
+	}
+
 	var items []string
-	for i, mr := range m.mrs {
-		items = append(items, m.renderMR(mr, i == m.cursor))
+
+	// Show scroll indicator if there are items above
+	if startIdx > 0 {
+		indicator := lipgloss.NewStyle().Foreground(lipgloss.Color("#666666")).Render(fmt.Sprintf("▲ %d more above ▲", startIdx))
+		items = append(items, indicator, "")
+	}
+
+	for i := startIdx; i < endIdx; i++ {
+		items = append(items, m.renderMR(m.mrs[i], i == m.cursor))
+	}
+
+	// Show scroll indicator if there are items below
+	if endIdx < len(m.mrs) {
+		remaining := len(m.mrs) - endIdx
+		indicator := lipgloss.NewStyle().Foreground(lipgloss.Color("#666666")).Render(fmt.Sprintf("▼ %d more below ▼", remaining))
+		items = append(items, "", indicator)
 	}
 
 	return lipgloss.JoinVertical(lipgloss.Left, items...)
