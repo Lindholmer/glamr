@@ -38,6 +38,8 @@ type MergeRequest struct {
 	HasConflicts      bool
 	HasUnresolvedDiscussions bool
 	Pipeline          *Pipeline
+	PipelineJobs      []PipelineJob // Cached pipeline jobs
+	Notes             []MRNote      // Cached notes/discussions
 	ApprovalCount     int
 	RequiredApprovals int
 	ApprovalsLeft     int

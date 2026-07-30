@@ -40,6 +40,7 @@ query getAuthoredMergeRequests($first: Int = 50, $after: String) {
           updatedAt
           jobs {
             nodes {
+              id
               name
               status
               stage {
@@ -120,6 +121,7 @@ query getAssignedMergeRequests($first: Int = 50, $after: String) {
           updatedAt
           jobs {
             nodes {
+              id
               name
               status
               stage {
@@ -200,6 +202,7 @@ query getReviewRequestedMergeRequests($first: Int = 50, $after: String) {
           updatedAt
           jobs {
             nodes {
+              id
               name
               status
               stage {

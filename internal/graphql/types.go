@@ -95,6 +95,7 @@ type JobConnection struct {
 }
 
 type Job struct {
+	ID     string    `json:"id"`
 	Name   string    `json:"name"`
 	Status string    `json:"status"`
 	Stage  CiStage   `json:"stage"`

@@ -32,6 +32,7 @@ type Model struct {
 	jobLogTitle       string
 	showingNoteThread bool
 	selectedNote      provider.MRNote
+	noteThreadScroll  int    // Scroll offset for note thread view
 	replyInput        string
 	composingReply    bool
 }
@@ -131,6 +132,16 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		// Handle navigation in note thread view
 		if m.showingNoteThread && !m.composingReply {
 			switch msg.String() {
+			case "up", "k":
+				// Scroll up in note thread
+				if m.noteThreadScroll > 0 {
+					m.noteThreadScroll--
+				}
+				return m, nil
+			case "down", "j":
+				// Scroll down in note thread
+				m.noteThreadScroll++
+				return m, nil
 			case "r":
 				// Start composing reply
 				m.composingReply = true
@@ -235,6 +246,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 						m.showingNoteThread = true
 						m.composingReply = false
 						m.replyInput = ""
+						m.noteThreadScroll = 0 // Reset scroll when opening note
 					}
 				}
 				return m, nil
@@ -248,6 +260,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				m.composingReply = true
 				m.replyInput = ""
 				m.selectedNote = provider.MRNote{} // Empty note for new thread
+				m.noteThreadScroll = 0
 				return m, nil
 			case "r":
 				// Refresh detail view
@@ -350,18 +363,13 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				selectedMR := m.mrs[m.cursor]
 				m.detailView = &DetailView{
 					mr:     selectedMR,
+					jobs:   selectedMR.PipelineJobs, // Use cached jobs
+					notes:  selectedMR.Notes,        // Use cached notes
 					width:  m.width,
 					height: m.height,
 				}
 				m.showingDetail = true
-				// Fetch jobs and notes - find the right provider or use first one
-				var p provider.Provider
-				if len(m.providers) > 0 {
-					p = m.providers[0]
-				}
-				if p != nil {
-					return m, fetchDetailData(p, selectedMR)
-				}
+				// No need to fetch - data is already cached in the MR
 			}
 			return m, nil
 
@@ -897,14 +905,16 @@ func (m Model) renderNoteThread() string {
 		header = headerStyle.Render(fmt.Sprintf("Discussion - !%d %s", selectedMR.IID, selectedMR.Title))
 	}
 
+	viewHeight := m.height - 12
 	threadStyle := lipgloss.NewStyle().
 		Width(m.width - 4).
-		Height(m.height - 12).
+		Height(viewHeight).
+		MaxHeight(viewHeight).
 		Border(lipgloss.RoundedBorder()).
 		BorderForeground(lipgloss.Color("#666666")).
 		Padding(1)
 
-	var content []string
+	var allLines []string
 
 	if m.selectedNote.ID != "" {
 		// Show the original note
@@ -924,26 +934,67 @@ func (m Model) renderNoteThread() string {
 			timeStyle.Render(m.selectedNote.CreatedAt),
 		)
 
-		content = append(content, noteHeader, "", m.selectedNote.Body, "")
-		content = append(content, lipgloss.NewStyle().Foreground(lipgloss.Color("#666666")).Render("─────────────────────"), "")
+		allLines = append(allLines, noteHeader, "")
+
+		// Split note body by lines to enable scrolling
+		bodyLines := strings.Split(m.selectedNote.Body, "\n")
+		allLines = append(allLines, bodyLines...)
+		allLines = append(allLines, "", lipgloss.NewStyle().Foreground(lipgloss.Color("#666666")).Render("─────────────────────"), "")
 	}
 
 	// Reply input section
 	if m.composingReply {
 		replyLabel := lipgloss.NewStyle().Foreground(lipgloss.Color("#00ff00")).Bold(true).Render("Your reply:")
-		content = append(content, replyLabel, "", m.replyInput+"│")
+		allLines = append(allLines, replyLabel, "", m.replyInput+"│")
 	} else {
-		promptText := "Press 'r' to reply, 'esc' to go back"
-		content = append(content, lipgloss.NewStyle().Foreground(lipgloss.Color("#888888")).Render(promptText))
+		promptText := "Press 'r' to reply, '↑↓ j/k' to scroll, 'esc' to go back"
+		allLines = append(allLines, lipgloss.NewStyle().Foreground(lipgloss.Color("#888888")).Render(promptText))
 	}
 
-	threadContent := threadStyle.Render(lipgloss.JoinVertical(lipgloss.Left, content...))
+	// Calculate visible window
+	visibleLines := viewHeight - 4 // Account for padding and border
+	totalLines := len(allLines)
+
+	// Adjust scroll bounds
+	maxScroll := totalLines - visibleLines
+	if maxScroll < 0 {
+		maxScroll = 0
+	}
+	if m.noteThreadScroll > maxScroll {
+		m.noteThreadScroll = maxScroll
+	}
+	if m.noteThreadScroll < 0 {
+		m.noteThreadScroll = 0
+	}
+
+	// Get visible slice
+	startIdx := m.noteThreadScroll
+	endIdx := startIdx + visibleLines
+	if endIdx > totalLines {
+		endIdx = totalLines
+	}
+
+	var visibleContent []string
+
+	// Add scroll indicator if scrolled
+	if startIdx > 0 {
+		visibleContent = append(visibleContent, lipgloss.NewStyle().Foreground(lipgloss.Color("#666666")).Render(fmt.Sprintf("▲ (line %d/%d)", startIdx+1, totalLines)))
+	}
+
+	visibleContent = append(visibleContent, allLines[startIdx:endIdx]...)
+
+	// Add more below indicator
+	if endIdx < totalLines {
+		visibleContent = append(visibleContent, lipgloss.NewStyle().Foreground(lipgloss.Color("#666666")).Render(fmt.Sprintf("▼ (%d more lines)", totalLines-endIdx)))
+	}
+
+	threadContent := threadStyle.Render(lipgloss.JoinVertical(lipgloss.Left, visibleContent...))
 
 	var help string
 	if m.composingReply {
 		help = helpStyle.Render("Type your reply | enter: post | esc: cancel")
 	} else {
-		help = helpStyle.Render("r: reply | esc: back | q: quit")
+		help = helpStyle.Render("↑/↓ j/k: scroll | r: reply | esc: back | q: quit")
 	}
 
 	return lipgloss.JoinVertical(

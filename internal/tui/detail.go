@@ -170,7 +170,10 @@ func (d DetailView) renderJobs(width, height int, isActive bool) string {
 		var icon string
 		var color lipgloss.Color
 
-		switch job.Status {
+		// Convert status to lowercase for case-insensitive matching
+		status := strings.ToLower(job.Status)
+
+		switch status {
 		case "success":
 			icon = "✅"
 			color = lipgloss.Color("#00ff00")

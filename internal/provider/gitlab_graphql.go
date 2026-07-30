@@ -465,7 +465,7 @@ func (p *GitLabGraphQLProvider) convertGraphQLMR(gqlMR graphql.MergeRequest) Mer
 		}
 	}
 
-	// Convert pipeline
+	// Convert pipeline and jobs
 	if gqlMR.HeadPipeline != nil {
 		pipelineID := extractNumericID(gqlMR.HeadPipeline.ID)
 		mr.Pipeline = &Pipeline{
@@ -477,21 +477,50 @@ func (p *GitLabGraphQLProvider) convertGraphQLMR(gqlMR graphql.MergeRequest) Mer
 			Duration:  time.Duration(gqlMR.HeadPipeline.Duration) * time.Second,
 		}
 
-		// Aggregate job statuses for more accurate pipeline status
+		// Convert and cache pipeline jobs
 		if len(gqlMR.HeadPipeline.Jobs.Nodes) > 0 {
+			mr.PipelineJobs = make([]PipelineJob, 0, len(gqlMR.HeadPipeline.Jobs.Nodes))
 			jobStatuses := make([]string, 0, len(gqlMR.HeadPipeline.Jobs.Nodes))
+
 			for _, job := range gqlMR.HeadPipeline.Jobs.Nodes {
+				mr.PipelineJobs = append(mr.PipelineJobs, PipelineJob{
+					ID:     extractNumericID(job.ID),
+					Name:   job.Name,
+					Status: job.Status,
+					Stage:  job.Stage.Name,
+				})
 				jobStatuses = append(jobStatuses, job.Status)
 			}
+
+			// Aggregate job statuses for more accurate pipeline status
 			mr.Pipeline.Status = aggregateJobStatuses(jobStatuses)
 		}
 	}
 
-	// Check for unresolved discussions
+	// Convert and cache discussions/notes
+	mr.Notes = make([]MRNote, 0)
 	for _, discussion := range gqlMR.Discussions.Nodes {
+		// Check for unresolved discussions
 		if discussion.Resolvable && !discussion.Resolved {
 			mr.HasUnresolvedDiscussions = true
-			break
+		}
+
+		// Convert each note in the discussion
+		for _, note := range discussion.Notes.Nodes {
+			// Skip system notes
+			if note.System {
+				continue
+			}
+
+			mr.Notes = append(mr.Notes, MRNote{
+				ID:         extractNumericID(note.Author.Username), // Not ideal, but GraphQL doesn't give us note ID
+				Author:     note.Author.Username,
+				Body:       note.Body,
+				CreatedAt:  note.CreatedAt.Format(time.RFC3339),
+				Resolvable: note.Resolvable,
+				Resolved:   note.Resolved,
+				System:     note.System,
+			})
 		}
 	}
 
