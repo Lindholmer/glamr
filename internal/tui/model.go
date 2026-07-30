@@ -2,6 +2,7 @@ package tui
 
 import (
 	"fmt"
+	"os"
 	"os/exec"
 	"runtime"
 	"strings"
@@ -31,6 +32,13 @@ type Model struct {
 	height            int
 	detailView        *DetailView
 	showingDetail     bool
+	filesView         *FilesView
+	showingFiles      bool
+	mrChanges         *provider.MRChanges
+	showingDiff       bool
+	diffContent       string
+	diffTitle         string
+	diffScroll        int // Scroll offset for diff view
 	showingJobLog     bool
 	jobLog            string
 	jobLogTitle       string
@@ -78,12 +86,24 @@ type replyPostedMsg struct {
 
 type tickMsg time.Time
 
+type mrChangesMsg struct {
+	changes  *provider.MRChanges
+	err      error
+	showDiff bool // If true, auto-show full diff after fetching
+}
+
+type diffMsg struct {
+	content string
+	title   string
+	err     error
+}
+
 func NewModel(providers ...provider.Provider) Model {
 	return Model{
 		providers:       providers,
 		scope:           provider.ScopeAuthored,
-		cache:           cache.NewCache(60 * time.Second), // 1 minute cache
-		refreshInterval: 60 * time.Second,                  // Check every 60 seconds
+		cache:           cache.NewCache(5 * time.Minute), // 5 minute cache
+		refreshInterval: 5 * time.Minute,                 // Check every 5 minutes
 		loading:         true,
 	}
 }
@@ -153,6 +173,25 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				// Scroll down in note thread
 				m.noteThreadScroll++
 				return m, nil
+			case "shift+up":
+				// Scroll up 20 lines
+				m.noteThreadScroll -= 20
+				if m.noteThreadScroll < 0 {
+					m.noteThreadScroll = 0
+				}
+				return m, nil
+			case "shift+down":
+				// Scroll down 20 lines
+				m.noteThreadScroll += 20
+				return m, nil
+			case "home":
+				// Go to top
+				m.noteThreadScroll = 0
+				return m, nil
+			case "end":
+				// Go to bottom - will be clamped in render function
+				m.noteThreadScroll = 999999
+				return m, nil
 			case "r":
 				// Start composing reply
 				m.composingReply = true
@@ -161,8 +200,45 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 		}
 
-		// Handle escape - exit note thread, job log, or detail view
+		// Handle navigation in diff view
+		if m.showingDiff {
+			switch msg.String() {
+			case "up", "k":
+				if m.diffScroll > 0 {
+					m.diffScroll--
+				}
+				return m, nil
+			case "down", "j":
+				m.diffScroll++
+				return m, nil
+			case "shift+up":
+				m.diffScroll -= 20
+				if m.diffScroll < 0 {
+					m.diffScroll = 0
+				}
+				return m, nil
+			case "shift+down":
+				m.diffScroll += 20
+				return m, nil
+			case "home":
+				m.diffScroll = 0
+				return m, nil
+			case "end":
+				// Go to bottom - will be clamped in render function
+				m.diffScroll = 999999
+				return m, nil
+			}
+		}
+
+		// Handle escape - exit note thread, job log, diff, files view, or detail view
 		if msg.String() == "esc" {
+			if m.showingDiff {
+				m.showingDiff = false
+				m.diffContent = ""
+				m.diffTitle = ""
+				m.diffScroll = 0
+				return m, nil
+			}
 			if m.showingJobLog {
 				m.showingJobLog = false
 				m.jobLog = ""
@@ -181,10 +257,39 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				m.selectedNote = provider.MRNote{}
 				return m, nil
 			}
+			if m.showingFiles {
+				// Exit files view, return to detail view
+				m.showingFiles = false
+				m.filesView = nil
+				return m, nil
+			}
 			if m.showingDetail {
 				m.showingDetail = false
 				m.detailView = nil
 				m.err = nil // Clear any detail view errors
+				return m, nil
+			}
+		}
+
+		// Handle navigation in files view
+		if m.showingFiles && m.filesView != nil {
+			switch msg.String() {
+			case "up", "k":
+				if m.filesView.cursor > 0 {
+					m.filesView.cursor--
+				}
+				return m, nil
+			case "down", "j":
+				if m.filesView.cursor < len(m.mrChanges.Changes)-1 {
+					m.filesView.cursor++
+				}
+				return m, nil
+			case "d":
+				// Show diff for selected file
+				if m.filesView.cursor < len(m.mrChanges.Changes) {
+					selectedFile := m.mrChanges.Changes[m.filesView.cursor]
+					return m, renderFileDiff(selectedFile)
+				}
 				return m, nil
 			}
 		}
@@ -265,6 +370,34 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				// Open MR in browser
 				selectedMR := m.mrs[m.cursor]
 				return m, openInBrowser(selectedMR.WebURL)
+			case "f":
+				// Show files view
+				selectedMR := m.mrs[m.cursor]
+				var p provider.Provider
+				if len(m.providers) > 0 {
+					p = m.providers[0]
+				}
+				if p != nil {
+					return m, fetchMRChanges(p, selectedMR)
+				}
+				return m, nil
+			case "d":
+				// Show full MR diff
+				selectedMR := m.mrs[m.cursor]
+				if m.mrChanges == nil {
+					// Fetch changes first, then auto-show diff
+					var p provider.Provider
+					if len(m.providers) > 0 {
+						p = m.providers[0]
+					}
+					if p != nil {
+						return m, fetchMRChangesForDiff(p, selectedMR)
+					}
+				} else {
+					// We have changes, render the full diff
+					return m, renderFullDiff(m.mrChanges, selectedMR)
+				}
+				return m, nil
 			case "n":
 				// Start composing a new note
 				m.showingNoteThread = true
@@ -344,12 +477,28 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		case "up", "k":
 			if m.cursor > 0 {
 				m.cursor--
+				// Update scroll to keep cursor visible
+				if m.cursor < m.scroll {
+					m.scroll = m.cursor
+				}
 			}
 			return m, nil
 
 		case "down", "j":
 			if m.cursor < len(m.mrs)-1 {
 				m.cursor++
+				// Update scroll to keep cursor visible
+				linesPerMR := 6
+				listHeight := m.height - 12 // Same as View() calculation
+				indicatorLines := 4          // Account for scroll indicators
+				availableLines := listHeight - indicatorLines
+				visibleMRs := availableLines / linesPerMR
+				if visibleMRs < 1 {
+					visibleMRs = 1
+				}
+				if m.cursor >= m.scroll+visibleMRs {
+					m.scroll = m.cursor - visibleMRs + 1
+				}
 			}
 			return m, nil
 
@@ -397,6 +546,8 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					height: m.height,
 				}
 				m.showingDetail = true
+				// Clear any cached changes from previous MR
+				m.mrChanges = nil
 				// No need to fetch - data is already cached in the MR
 			}
 			return m, nil
@@ -501,6 +652,44 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		return m, nil
 
+	case mrChangesMsg:
+		if msg.err != nil {
+			m.err = msg.err
+		} else {
+			m.mrChanges = msg.changes
+
+			if msg.showDiff {
+				// Auto-show full diff after fetching
+				if len(m.mrs) > 0 {
+					selectedMR := m.mrs[m.cursor]
+					return m, renderFullDiff(msg.changes, selectedMR)
+				}
+			} else {
+				// Show files view
+				if len(m.mrs) > 0 {
+					selectedMR := m.mrs[m.cursor]
+					m.filesView = &FilesView{
+						mr:      selectedMR,
+						changes: msg.changes,
+						width:   m.width,
+						height:  m.height,
+					}
+					m.showingFiles = true
+				}
+			}
+		}
+		return m, nil
+
+	case diffMsg:
+		if msg.err != nil {
+			m.err = msg.err
+		} else {
+			m.diffContent = msg.content
+			m.diffTitle = msg.title
+			m.showingDiff = true
+		}
+		return m, nil
+
 	case replyPostedMsg:
 		if msg.err != nil {
 			m.err = msg.err
@@ -533,6 +722,11 @@ func (m Model) View() string {
 		return errorStyle.Render(fmt.Sprintf("Error: %v\n\nPress q to quit", m.err))
 	}
 
+	// Show diff if active
+	if m.showingDiff {
+		return m.renderDiff()
+	}
+
 	// Show job log if active
 	if m.showingJobLog {
 		return m.renderJobLog()
@@ -541,6 +735,11 @@ func (m Model) View() string {
 	// Show note thread if active
 	if m.showingNoteThread {
 		return m.renderNoteThread()
+	}
+
+	// Show files view if active
+	if m.showingFiles && m.filesView != nil {
+		return m.filesView.Render()
 	}
 
 	// Show detail view if active
@@ -558,7 +757,19 @@ func (m Model) View() string {
 	status := m.renderStatus()
 
 	// MR list
-	list := m.renderMRList()
+	listContent := m.renderMRList()
+
+	// Calculate available height for the list (account for header, tabs, status, help, spacing)
+	listHeight := m.height - 12
+	if listHeight < 5 {
+		listHeight = 5
+	}
+
+	// Wrap list in a fixed-height container
+	listStyle := lipgloss.NewStyle().
+		MaxHeight(listHeight).
+		Height(listHeight)
+	list := listStyle.Render(listContent)
 
 	// Help
 	help := helpStyle.Render("↑/↓: navigate | enter: details | o: open in browser | 1/2/3: switch scope | r: refresh | q: quit")
@@ -589,17 +800,38 @@ func (m Model) scopeName() string {
 }
 
 func (m Model) renderTabs() string {
+	// Check if there are unreviewed MRs in reviewing tab (ignore drafts)
+	hasUnreviewed := false
+	for _, mr := range m.mrsReviewing {
+		// Skip draft MRs
+		if mr.Status == provider.StatusDraft {
+			continue
+		}
+		if !mr.UserApproved {
+			hasUnreviewed = true
+			break
+		}
+	}
+
 	tabs := []string{
-		m.renderTab("1. Authored", m.scope == provider.ScopeAuthored),
-		m.renderTab("2. Assigned", m.scope == provider.ScopeAssigned),
-		m.renderTab("3. Reviewing", m.scope == provider.ScopeReviewing),
+		m.renderTab("1. Authored", m.scope == provider.ScopeAuthored, false),
+		m.renderTab("2. Assigned", m.scope == provider.ScopeAssigned, false),
+		m.renderTab("3. Reviewing", m.scope == provider.ScopeReviewing, hasUnreviewed),
 	}
 	return lipgloss.JoinHorizontal(lipgloss.Top, tabs...)
 }
 
-func (m Model) renderTab(label string, active bool) string {
+func (m Model) renderTab(label string, active bool, needsAttention bool) string {
 	if active {
 		return activeTabStyle.Render(label)
+	}
+	if needsAttention {
+		// Red color for tabs that need attention
+		redTabStyle := lipgloss.NewStyle().
+			Padding(0, 2).
+			Foreground(lipgloss.Color("#ff0000")).
+			Bold(true)
+		return redTabStyle.Render(label)
 	}
 	return tabStyle.Render(label)
 }
@@ -641,21 +873,19 @@ func (m Model) renderMRList() string {
 		return emptyStyle.Render("No merge requests found")
 	}
 
-	// Calculate visible area - each MR takes ~4 lines (status, title, meta, spacing)
-	linesPerMR := 4
-	visibleMRs := (m.height - 15) / linesPerMR // Account for header, tabs, status, help
+	// Calculate visible area - each MR takes ~6 lines (status, title, repo, branch, pipeline, approvals, spacing)
+	linesPerMR := 6
+	listHeight := m.height - 12 // Same as View() calculation
+
+	// Account for scroll indicators (2 lines each + 2 blank lines)
+	indicatorLines := 4
+	availableLines := listHeight - indicatorLines
+	visibleMRs := availableLines / linesPerMR
 	if visibleMRs < 1 {
 		visibleMRs = 1
 	}
 
-	// Calculate scroll offset to keep cursor visible
-	if m.cursor < m.scroll {
-		m.scroll = m.cursor
-	} else if m.cursor >= m.scroll+visibleMRs {
-		m.scroll = m.cursor - visibleMRs + 1
-	}
-
-	// Calculate which MRs to show
+	// Calculate which MRs to show based on scroll (scroll is updated in Update())
 	startIdx := m.scroll
 	endIdx := m.scroll + visibleMRs
 	if endIdx > len(m.mrs) {
@@ -748,9 +978,9 @@ func (m Model) renderMR(mr provider.MergeRequest, selected bool) string {
 
 	// Approval status with color coding
 	var approvalLine string
-	if mr.RequiredApprovals > 0 {
-		approvalStyle := lipgloss.NewStyle()
+	approvalStyle := lipgloss.NewStyle()
 
+	if mr.RequiredApprovals > 0 {
 		if mr.UserApproved && mr.Approved {
 			// You approved AND fully approved - green checkmark
 			approvalStyle = approvalStyle.Foreground(lipgloss.Color("#00ff00"))
@@ -766,6 +996,20 @@ func (m Model) renderMR(mr provider.MergeRequest, selected bool) string {
 			// Waiting for approvals (you haven't approved) - grayscale/dim
 			approvalStyle = approvalStyle.Foreground(lipgloss.Color("#888888"))
 			approvalLine = approvalStyle.Render(fmt.Sprintf("   ○ %d/%d approvals", mr.ApprovalCount, mr.RequiredApprovals))
+		}
+	} else {
+		// No approvals required (optional reviews)
+		if mr.UserApproved {
+			// You approved even though optional - green checkmark
+			approvalStyle = approvalStyle.Foreground(lipgloss.Color("#00ff00"))
+			approvalLine = approvalStyle.Render(fmt.Sprintf("   ✓ You approved | %d/0", mr.ApprovalCount))
+		} else if mr.ApprovalCount > 0 {
+			// Others approved but not you
+			approvalLine = fmt.Sprintf("   ✓ %d/0 approved", mr.ApprovalCount)
+		} else {
+			// No approvals yet (optional)
+			approvalStyle = approvalStyle.Foreground(lipgloss.Color("#888888"))
+			approvalLine = approvalStyle.Render("   ○ 0/0 approvals (optional)")
 		}
 	}
 
@@ -988,6 +1232,161 @@ func openInBrowser(url string) tea.Cmd {
 	}
 }
 
+func fetchMRChanges(p provider.Provider, mr provider.MergeRequest) tea.Cmd {
+	return func() tea.Msg {
+		changes, err := p.GetMRChanges(mr.IID, mr.RepoName)
+		if err != nil {
+			return mrChangesMsg{err: err}
+		}
+		return mrChangesMsg{changes: changes, showDiff: false}
+	}
+}
+
+func fetchMRChangesForDiff(p provider.Provider, mr provider.MergeRequest) tea.Cmd {
+	return func() tea.Msg {
+		changes, err := p.GetMRChanges(mr.IID, mr.RepoName)
+		if err != nil {
+			return mrChangesMsg{err: err}
+		}
+		return mrChangesMsg{changes: changes, showDiff: true}
+	}
+}
+
+func renderFullDiff(changes *provider.MRChanges, mr provider.MergeRequest) tea.Cmd {
+	return func() tea.Msg {
+		if changes == nil || len(changes.Changes) == 0 {
+			return diffMsg{err: fmt.Errorf("no changes to display")}
+		}
+
+		// Create temp file with all diffs concatenated
+		tmpfile, err := os.CreateTemp("", "glamr-full-diff-*.patch")
+		if err != nil {
+			return diffMsg{err: err}
+		}
+		defer os.Remove(tmpfile.Name())
+
+		// Write all diffs to the temp file
+		for _, change := range changes.Changes {
+			tmpfile.Write([]byte(change.Diff))
+			tmpfile.Write([]byte("\n"))
+		}
+		tmpfile.Close()
+
+		// Run delta with --paging never to capture the formatted output
+		cmd := exec.Command("sh", "-c", fmt.Sprintf("~/.local/bin/delta --paging never < %s", tmpfile.Name()))
+		output, err := cmd.Output()
+		if err != nil {
+			return diffMsg{err: fmt.Errorf("failed to format diff: %w", err)}
+		}
+
+		return diffMsg{
+			content: string(output),
+			title:   fmt.Sprintf("Full Diff: !%d %s", mr.IID, mr.Title),
+		}
+	}
+}
+
+func renderFileDiff(file provider.FileChange) tea.Cmd {
+	return func() tea.Msg {
+		// Create temp file with the diff
+		tmpfile, err := os.CreateTemp("", "glamr-diff-*.patch")
+		if err != nil {
+			return diffMsg{err: err}
+		}
+		defer os.Remove(tmpfile.Name())
+
+		if _, err := tmpfile.Write([]byte(file.Diff)); err != nil {
+			return diffMsg{err: err}
+		}
+		tmpfile.Close()
+
+		// Run delta with --paging never to capture the formatted output
+		cmd := exec.Command("sh", "-c", fmt.Sprintf("~/.local/bin/delta --paging never < %s", tmpfile.Name()))
+		output, err := cmd.Output()
+		if err != nil {
+			return diffMsg{err: fmt.Errorf("failed to format diff: %w", err)}
+		}
+
+		return diffMsg{
+			content: string(output),
+			title:   fmt.Sprintf("File Diff: %s", file.NewPath),
+		}
+	}
+}
+
+func urlEncode(s string) string {
+	s = strings.ReplaceAll(s, "/", "%2F")
+	s = strings.ReplaceAll(s, " ", "%20")
+	return s
+}
+
+func (m Model) renderDiff() string {
+	header := headerStyle.Render(m.diffTitle)
+
+	// Split content into lines for scrolling
+	lines := strings.Split(m.diffContent, "\n")
+
+	// Calculate visible area
+	viewportHeight := m.height - 8 // Account for header, borders, help
+	if viewportHeight < 5 {
+		viewportHeight = 5
+	}
+
+	// Ensure scroll doesn't go past the end
+	maxScroll := len(lines) - viewportHeight
+	if maxScroll < 0 {
+		maxScroll = 0
+	}
+	if m.diffScroll > maxScroll {
+		m.diffScroll = maxScroll
+	}
+
+	// Calculate which lines to show
+	startIdx := m.diffScroll
+	endIdx := m.diffScroll + viewportHeight
+	if endIdx > len(lines) {
+		endIdx = len(lines)
+	}
+
+	var visibleLines []string
+
+	// Show scroll indicator if there are lines above
+	if startIdx > 0 {
+		indicator := lipgloss.NewStyle().Foreground(lipgloss.Color("#666666")).Render(fmt.Sprintf("▲ (%d lines above)", startIdx))
+		visibleLines = append(visibleLines, indicator)
+	}
+
+	// Add visible content lines
+	visibleLines = append(visibleLines, lines[startIdx:endIdx]...)
+
+	// Show scroll indicator if there are lines below
+	if endIdx < len(lines) {
+		remaining := len(lines) - endIdx
+		indicator := lipgloss.NewStyle().Foreground(lipgloss.Color("#666666")).Render(fmt.Sprintf("▼ (%d lines below)", remaining))
+		visibleLines = append(visibleLines, indicator)
+	}
+
+	diffStyle := lipgloss.NewStyle().
+		Width(m.width - 4).
+		Height(viewportHeight + 2). // +2 for scroll indicators
+		Border(lipgloss.RoundedBorder()).
+		BorderForeground(lipgloss.Color("#666666")).
+		Padding(1)
+
+	diffContent := diffStyle.Render(strings.Join(visibleLines, "\n"))
+
+	help := helpStyle.Render("↑/↓ j/k: scroll | shift+↑/↓: scroll 20 lines | home/end: top/bottom | esc: back | q: quit")
+
+	return lipgloss.JoinVertical(
+		lipgloss.Left,
+		header,
+		"",
+		diffContent,
+		"",
+		help,
+	)
+}
+
 func (m Model) renderJobLog() string {
 	header := headerStyle.Render(m.jobLogTitle)
 
@@ -1066,7 +1465,7 @@ func (m Model) renderNoteThread() string {
 		replyLabel := lipgloss.NewStyle().Foreground(lipgloss.Color("#00ff00")).Bold(true).Render("Your reply:")
 		allLines = append(allLines, replyLabel, "", m.replyInput+"│")
 	} else {
-		promptText := "Press 'r' to reply, '↑↓ j/k' to scroll, 'esc' to go back"
+		promptText := "Press 'r' to reply"
 		allLines = append(allLines, lipgloss.NewStyle().Foreground(lipgloss.Color("#888888")).Render(promptText))
 	}
 
@@ -1113,7 +1512,7 @@ func (m Model) renderNoteThread() string {
 	if m.composingReply {
 		help = helpStyle.Render("Type your reply | enter: post | esc: cancel")
 	} else {
-		help = helpStyle.Render("↑/↓ j/k: scroll | r: reply | esc: back | q: quit")
+		help = helpStyle.Render("↑/↓ j/k: scroll | shift+↑/↓: scroll 20 lines | home/end: top/bottom | r: reply | esc: back | q: quit")
 	}
 
 	return lipgloss.JoinVertical(

@@ -399,6 +399,48 @@ func (p *GitLabGraphQLProvider) CancelJob(jobID string, repo string) error {
 	return nil
 }
 
+func (p *GitLabGraphQLProvider) GetMRChanges(mrIID int, repo string) (*MRChanges, error) {
+	urlEncodedRepo := urlEncode(repo)
+	cmd := p.buildGlabCommand("api", fmt.Sprintf("projects/%s/merge_requests/%d/changes", urlEncodedRepo, mrIID))
+
+	output, err := cmd.Output()
+	if err != nil {
+		return nil, fmt.Errorf("failed to get MR changes: %w", err)
+	}
+
+	var response struct {
+		Changes []struct {
+			OldPath     string `json:"old_path"`
+			NewPath     string `json:"new_path"`
+			NewFile     bool   `json:"new_file"`
+			RenamedFile bool   `json:"renamed_file"`
+			DeletedFile bool   `json:"deleted_file"`
+			Diff        string `json:"diff"`
+		} `json:"changes"`
+	}
+
+	if err := json.Unmarshal(output, &response); err != nil {
+		return nil, fmt.Errorf("failed to parse MR changes: %w", err)
+	}
+
+	changes := &MRChanges{
+		Changes: make([]FileChange, 0, len(response.Changes)),
+	}
+
+	for _, change := range response.Changes {
+		changes.Changes = append(changes.Changes, FileChange{
+			OldPath:     change.OldPath,
+			NewPath:     change.NewPath,
+			NewFile:     change.NewFile,
+			RenamedFile: change.RenamedFile,
+			DeletedFile: change.DeletedFile,
+			Diff:        change.Diff,
+		})
+	}
+
+	return changes, nil
+}
+
 // Helper methods
 
 func (p *GitLabGraphQLProvider) buildGlabCommand(args ...string) *exec.Cmd {

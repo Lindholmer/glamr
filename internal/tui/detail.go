@@ -83,7 +83,7 @@ func (d DetailView) Render() string {
 	)
 
 	// Build dynamic help based on selected job status and active panel
-	helpText := "o: open in browser | ↑/↓ j/k: navigate | ←/→ h/l: switch panel | r: refresh"
+	helpText := "f: files | d: full diff | o: open in browser | ↑/↓ j/k: navigate | ←/→ h/l: switch panel | r: refresh"
 	if d.activePanel == JobsPanel && len(d.jobs) > 0 {
 		helpText += " | enter: view log"
 		selectedJob := d.jobs[d.jobsCursor]

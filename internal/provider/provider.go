@@ -113,6 +113,9 @@ type Provider interface {
 
 	// CancelJob cancels/stops a running or pending job
 	CancelJob(jobID string, repo string) error
+
+	// GetMRChanges fetches the diff/changes for an MR
+	GetMRChanges(mrIID int, repo string) (*MRChanges, error)
 }
 
 // PipelineJob represents a CI/CD job
@@ -132,4 +135,19 @@ type MRNote struct {
 	Resolvable bool
 	Resolved   bool
 	System     bool // System-generated note
+}
+
+// MRChanges represents the changes/diffs in an MR
+type MRChanges struct {
+	Changes []FileChange
+}
+
+// FileChange represents a single file change in an MR
+type FileChange struct {
+	OldPath     string
+	NewPath     string
+	NewFile     bool
+	RenamedFile bool
+	DeletedFile bool
+	Diff        string
 }
