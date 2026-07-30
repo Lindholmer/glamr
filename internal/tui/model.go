@@ -17,9 +17,13 @@ type Model struct {
 	providers         []provider.Provider
 	scope             provider.Scope
 	mrs               []provider.MergeRequest
+	mrsAuthored       []provider.MergeRequest // Cached authored MRs
+	mrsAssigned       []provider.MergeRequest // Cached assigned MRs
+	mrsReviewing      []provider.MergeRequest // Cached reviewing MRs
 	cursor            int
 	scroll            int // Scroll offset for MR list
 	loading           bool
+	refreshing        bool // Background refresh in progress
 	err               error
 	cache             *cache.Cache
 	refreshInterval   time.Duration
@@ -41,6 +45,13 @@ type Model struct {
 type mrsFetchedMsg struct {
 	mrs []provider.MergeRequest
 	err error
+}
+
+type allScopesMRsMsg struct {
+	authored  []provider.MergeRequest
+	assigned  []provider.MergeRequest
+	reviewing []provider.MergeRequest
+	err       error
 }
 
 type detailDataMsg struct {
@@ -79,7 +90,7 @@ func NewModel(providers ...provider.Provider) Model {
 
 func (m Model) Init() tea.Cmd {
 	return tea.Batch(
-		fetchAllMRs(m.providers, m.scope),
+		fetchAllScopesMRs(m.providers), // Fetch all scopes at once
 		tickCmd(),
 	)
 }
@@ -326,9 +337,9 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m, tea.Quit
 
 		case "r":
-			// Manual refresh
-			m.loading = true
-			return m, fetchAllMRs(m.providers, m.scope)
+			// Manual refresh in background - keep showing current data
+			m.refreshing = true
+			return m, fetchAllScopesMRs(m.providers)
 
 		case "up", "k":
 			if m.cursor > 0 {
@@ -343,19 +354,36 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m, nil
 
 		case "1":
+			// Switch to authored scope - use cached data
 			m.scope = provider.ScopeAuthored
-			m.loading = true
-			return m, fetchAllMRs(m.providers, m.scope)
+			m.mrs = m.mrsAuthored
+			m.cursor = 0
+			m.scroll = 0
+			return m, nil
 
 		case "2":
+			// Switch to assigned scope - use cached data
 			m.scope = provider.ScopeAssigned
-			m.loading = true
-			return m, fetchAllMRs(m.providers, m.scope)
+			m.mrs = m.mrsAssigned
+			m.cursor = 0
+			m.scroll = 0
+			return m, nil
 
 		case "3":
+			// Switch to reviewing scope - use cached data
 			m.scope = provider.ScopeReviewing
-			m.loading = true
-			return m, fetchAllMRs(m.providers, m.scope)
+			m.mrs = m.mrsReviewing
+			m.cursor = 0
+			m.scroll = 0
+			return m, nil
+
+		case "o":
+			// Open selected MR in browser from main list
+			if len(m.mrs) > 0 && m.cursor < len(m.mrs) {
+				selectedMR := m.mrs[m.cursor]
+				return m, openInBrowser(selectedMR.WebURL)
+			}
+			return m, nil
 
 		case "enter":
 			// Show detail view for selected MR
@@ -372,11 +400,39 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				// No need to fetch - data is already cached in the MR
 			}
 			return m, nil
-
-		case "o":
-			// Open selected MR in browser (future feature)
-			return m, nil
 		}
+
+	case allScopesMRsMsg:
+		m.loading = false
+		m.refreshing = false // Clear refreshing flag
+		if msg.err != nil {
+			m.err = msg.err
+		} else {
+			m.err = nil
+			// Cache all three scopes
+			m.mrsAuthored = msg.authored
+			m.mrsAssigned = msg.assigned
+			m.mrsReviewing = msg.reviewing
+
+			// Set current view based on active scope
+			switch m.scope {
+			case provider.ScopeAuthored:
+				m.mrs = m.mrsAuthored
+			case provider.ScopeAssigned:
+				m.mrs = m.mrsAssigned
+			case provider.ScopeReviewing:
+				m.mrs = m.mrsReviewing
+			}
+
+			// Reset cursor if out of bounds
+			if m.cursor >= len(m.mrs) {
+				m.cursor = 0
+			}
+
+			// Update cache with current scope's data
+			m.cache.Set(m.mrs)
+		}
+		return m, nil
 
 	case mrsFetchedMsg:
 		m.loading = false
@@ -395,11 +451,11 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, nil
 
 	case tickMsg:
-		// Auto-refresh if cache is stale
-		if m.cache.IsStale() && !m.loading {
-			m.loading = true
+		// Auto-refresh if cache is stale - do it in background
+		if m.cache.IsStale() && !m.loading && !m.refreshing {
+			m.refreshing = true
 			return m, tea.Batch(
-				fetchAllMRs(m.providers, m.scope),
+				fetchAllScopesMRs(m.providers), // Fetch all scopes on refresh
 				tickCmd(),
 			)
 		}
@@ -505,7 +561,7 @@ func (m Model) View() string {
 	list := m.renderMRList()
 
 	// Help
-	help := helpStyle.Render("↑/↓: navigate | 1/2/3: switch scope | r: refresh | q: quit")
+	help := helpStyle.Render("↑/↓: navigate | enter: details | o: open in browser | 1/2/3: switch scope | r: refresh | q: quit")
 
 	return lipgloss.JoinVertical(
 		lipgloss.Left,
@@ -569,7 +625,11 @@ func (m Model) renderStatus() string {
 		}
 	}
 
-	return statusStyle.Render(fmt.Sprintf("Last refresh: %v ago | %d MRs from %d repos", timeSince, len(m.mrs), repoCount))
+	status := fmt.Sprintf("Last refresh: %v ago | %d MRs from %d repos", timeSince, len(m.mrs), repoCount)
+	if m.refreshing {
+		status += " | ⟳ Refreshing..."
+	}
+	return statusStyle.Render(status)
 }
 
 func (m Model) renderMRList() string {
@@ -752,6 +812,65 @@ func fetchAllMRs(providers []provider.Provider, scope provider.Scope) tea.Cmd {
 
 		// Return all MRs at once - no partial updates
 		return mrsFetchedMsg{mrs: allMRs, err: lastErr}
+	}
+}
+
+// fetchAllScopesMRs fetches MRs from all three scopes in parallel queries
+func fetchAllScopesMRs(providers []provider.Provider) tea.Cmd {
+	return func() tea.Msg {
+		// Use channels to fetch all three scopes in parallel
+		type scopeResult struct {
+			scope provider.Scope
+			mrs   []provider.MergeRequest
+			err   error
+		}
+
+		results := make(chan scopeResult, 3)
+
+		// Fetch each scope in parallel
+		for _, scope := range []provider.Scope{provider.ScopeAuthored, provider.ScopeAssigned, provider.ScopeReviewing} {
+			go func(s provider.Scope) {
+				var allMRs []provider.MergeRequest
+				var lastErr error
+
+				for _, p := range providers {
+					mrs, err := p.ListMRs(s)
+					if err != nil {
+						lastErr = err
+						continue
+					}
+					allMRs = append(allMRs, mrs...)
+				}
+
+				results <- scopeResult{scope: s, mrs: allMRs, err: lastErr}
+			}(scope)
+		}
+
+		// Collect all results
+		var authored, assigned, reviewing []provider.MergeRequest
+		var lastErr error
+
+		for i := 0; i < 3; i++ {
+			result := <-results
+			if result.err != nil {
+				lastErr = result.err
+			}
+			switch result.scope {
+			case provider.ScopeAuthored:
+				authored = result.mrs
+			case provider.ScopeAssigned:
+				assigned = result.mrs
+			case provider.ScopeReviewing:
+				reviewing = result.mrs
+			}
+		}
+
+		return allScopesMRsMsg{
+			authored:  authored,
+			assigned:  assigned,
+			reviewing: reviewing,
+			err:       lastErr,
+		}
 	}
 }
 

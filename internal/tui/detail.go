@@ -242,11 +242,7 @@ func (d DetailView) renderNotes(width, height int, isActive bool) string {
 
 	title := lipgloss.NewStyle().Bold(true).Render("Comments & Discussions")
 
-	if len(d.notes) == 0 {
-		return notesStyle.Render(lipgloss.JoinVertical(lipgloss.Left, title, "", "Loading notes..."))
-	}
-
-	// Filter unresolved notes
+	// Filter unresolved notes first to see if we have any
 	var filteredNotes []provider.MRNote
 	for _, note := range d.notes {
 		if note.Resolvable && note.Resolved {
@@ -254,6 +250,17 @@ func (d DetailView) renderNotes(width, height int, isActive bool) string {
 		}
 		filteredNotes = append(filteredNotes, note)
 	}
+
+	if len(filteredNotes) == 0 {
+		// Show appropriate message: either no notes at all, or all are resolved
+		message := "No unresolved discussions"
+		if len(d.notes) == 0 {
+			message = "No notes or discussions"
+		}
+		return notesStyle.Render(lipgloss.JoinVertical(lipgloss.Left, title, "", message))
+	}
+
+	// filteredNotes already populated above
 
 	// Calculate visible area - estimate 6 lines per note (header + body + spacing)
 	linesPerNote := 6

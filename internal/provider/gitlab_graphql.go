@@ -109,6 +109,48 @@ func (p *GitLabGraphQLProvider) ListMRs(scope Scope) ([]MergeRequest, error) {
 	return allMRs, nil
 }
 
+// ListAllMRs fetches MRs from all three scopes in a single query
+func (p *GitLabGraphQLProvider) ListAllMRs() (authored, assigned, reviewing []MergeRequest, err error) {
+	variables := map[string]interface{}{
+		"first": 50,
+	}
+
+	response, err := p.executeGraphQL(graphql.AllScopesQuery, variables)
+	if err != nil {
+		return nil, nil, nil, err
+	}
+
+	if response.Data.CurrentUser == nil {
+		return nil, nil, nil, fmt.Errorf("no current user found")
+	}
+
+	// Convert authored MRs
+	if response.Data.CurrentUser.AuthoredMergeRequests != nil {
+		for _, gqlMR := range response.Data.CurrentUser.AuthoredMergeRequests.Nodes {
+			mr := p.convertGraphQLMR(gqlMR)
+			authored = append(authored, mr)
+		}
+	}
+
+	// Convert assigned MRs
+	if response.Data.CurrentUser.AssignedMergeRequests != nil {
+		for _, gqlMR := range response.Data.CurrentUser.AssignedMergeRequests.Nodes {
+			mr := p.convertGraphQLMR(gqlMR)
+			assigned = append(assigned, mr)
+		}
+	}
+
+	// Convert reviewing MRs
+	if response.Data.CurrentUser.ReviewRequestedMergeRequests != nil {
+		for _, gqlMR := range response.Data.CurrentUser.ReviewRequestedMergeRequests.Nodes {
+			mr := p.convertGraphQLMR(gqlMR)
+			reviewing = append(reviewing, mr)
+		}
+	}
+
+	return authored, assigned, reviewing, nil
+}
+
 func (p *GitLabGraphQLProvider) GetMR(id string) (*MergeRequest, error) {
 	// Parse the ID to extract project path and IID
 	// ID format could be "project/path!123" or just "123"
