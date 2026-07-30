@@ -98,6 +98,23 @@ type diffMsg struct {
 	err     error
 }
 
+type approvalMsg struct {
+	mrID     string
+	approved bool
+	err      error
+}
+
+type resolveMsg struct {
+	discussionID string
+	resolved     bool
+	err          error
+}
+
+type draftMsg struct {
+	mrID string
+	err  error
+}
+
 func NewModel(providers ...provider.Provider) Model {
 	return Model{
 		providers:       providers,
@@ -196,6 +213,23 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				// Start composing reply
 				m.composingReply = true
 				m.replyInput = ""
+				return m, nil
+			case "x":
+				// Toggle resolve/unresolve discussion
+				if m.selectedNote.Resolvable && m.selectedNote.ID != "" {
+					selectedMR := m.mrs[m.cursor]
+					var p provider.Provider
+					if len(m.providers) > 0 {
+						p = m.providers[0]
+					}
+					if p != nil {
+						if m.selectedNote.Resolved {
+							return m, unresolveDiscussion(p, selectedMR, m.selectedNote.ID)
+						} else {
+							return m, resolveDiscussion(p, selectedMR, m.selectedNote.ID)
+						}
+					}
+				}
 				return m, nil
 			}
 		}
@@ -370,6 +404,32 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				// Open MR in browser
 				selectedMR := m.mrs[m.cursor]
 				return m, openInBrowser(selectedMR.WebURL)
+			case "a":
+				// Toggle approve/unapprove MR
+				selectedMR := m.mrs[m.cursor]
+				var p provider.Provider
+				if len(m.providers) > 0 {
+					p = m.providers[0]
+				}
+				if p != nil {
+					if selectedMR.UserApproved {
+						return m, unapproveMR(p, selectedMR)
+					} else {
+						return m, approveMR(p, selectedMR)
+					}
+				}
+				return m, nil
+			case "D", "shift+d":
+				// Toggle draft status
+				selectedMR := m.mrs[m.cursor]
+				var p provider.Provider
+				if len(m.providers) > 0 {
+					p = m.providers[0]
+				}
+				if p != nil {
+					return m, toggleDraftStatus(p, selectedMR)
+				}
+				return m, nil
 			case "f":
 				// Show files view
 				selectedMR := m.mrs[m.cursor]
@@ -534,6 +594,38 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 			return m, nil
 
+		case "a":
+			// Toggle approve/unapprove MR
+			if len(m.mrs) > 0 && m.cursor < len(m.mrs) {
+				selectedMR := m.mrs[m.cursor]
+				var p provider.Provider
+				if len(m.providers) > 0 {
+					p = m.providers[0]
+				}
+				if p != nil {
+					if selectedMR.UserApproved {
+						return m, unapproveMR(p, selectedMR)
+					} else {
+						return m, approveMR(p, selectedMR)
+					}
+				}
+			}
+			return m, nil
+
+		case "D", "shift+d":
+			// Toggle draft status
+			if len(m.mrs) > 0 && m.cursor < len(m.mrs) {
+				selectedMR := m.mrs[m.cursor]
+				var p provider.Provider
+				if len(m.providers) > 0 {
+					p = m.providers[0]
+				}
+				if p != nil {
+					return m, toggleDraftStatus(p, selectedMR)
+				}
+			}
+			return m, nil
+
 		case "enter":
 			// Show detail view for selected MR
 			if len(m.mrs) > 0 && m.cursor < len(m.mrs) {
@@ -649,6 +741,106 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					return m, fetchDetailData(p, selectedMR)
 				}
 			}
+		}
+		return m, nil
+
+	case approvalMsg:
+		if msg.err != nil {
+			m.err = msg.err
+		} else {
+			// Update the MR in the cache
+			for i := range m.mrs {
+				if m.mrs[i].ID == msg.mrID {
+					m.mrs[i].UserApproved = msg.approved
+					if msg.approved {
+						m.mrs[i].ApprovalCount++
+					} else {
+						m.mrs[i].ApprovalCount--
+					}
+					// Check if it's now fully approved
+					m.mrs[i].Approved = m.mrs[i].ApprovalCount >= m.mrs[i].RequiredApprovals
+					break
+				}
+			}
+			// Also update in the scope caches
+			for i := range m.mrsAuthored {
+				if m.mrsAuthored[i].ID == msg.mrID {
+					m.mrsAuthored[i].UserApproved = msg.approved
+					if msg.approved {
+						m.mrsAuthored[i].ApprovalCount++
+					} else {
+						m.mrsAuthored[i].ApprovalCount--
+					}
+					m.mrsAuthored[i].Approved = m.mrsAuthored[i].ApprovalCount >= m.mrsAuthored[i].RequiredApprovals
+					break
+				}
+			}
+			for i := range m.mrsAssigned {
+				if m.mrsAssigned[i].ID == msg.mrID {
+					m.mrsAssigned[i].UserApproved = msg.approved
+					if msg.approved {
+						m.mrsAssigned[i].ApprovalCount++
+					} else {
+						m.mrsAssigned[i].ApprovalCount--
+					}
+					m.mrsAssigned[i].Approved = m.mrsAssigned[i].ApprovalCount >= m.mrsAssigned[i].RequiredApprovals
+					break
+				}
+			}
+			for i := range m.mrsReviewing {
+				if m.mrsReviewing[i].ID == msg.mrID {
+					m.mrsReviewing[i].UserApproved = msg.approved
+					if msg.approved {
+						m.mrsReviewing[i].ApprovalCount++
+					} else {
+						m.mrsReviewing[i].ApprovalCount--
+					}
+					m.mrsReviewing[i].Approved = m.mrsReviewing[i].ApprovalCount >= m.mrsReviewing[i].RequiredApprovals
+					break
+				}
+			}
+			// Update detail view if showing
+			if m.showingDetail && m.detailView != nil {
+				if m.detailView.mr.ID == msg.mrID {
+					m.detailView.mr.UserApproved = msg.approved
+					if msg.approved {
+						m.detailView.mr.ApprovalCount++
+					} else {
+						m.detailView.mr.ApprovalCount--
+					}
+					m.detailView.mr.Approved = m.detailView.mr.ApprovalCount >= m.detailView.mr.RequiredApprovals
+				}
+			}
+		}
+		return m, nil
+
+	case resolveMsg:
+		if msg.err != nil {
+			m.err = msg.err
+		} else {
+			// Update the note resolution status
+			if m.selectedNote.ID == msg.discussionID {
+				m.selectedNote.Resolved = msg.resolved
+			}
+			// Update in detail view notes cache
+			if m.showingDetail && m.detailView != nil {
+				for i := range m.detailView.notes {
+					if m.detailView.notes[i].ID == msg.discussionID {
+						m.detailView.notes[i].Resolved = msg.resolved
+						break
+					}
+				}
+			}
+		}
+		return m, nil
+
+	case draftMsg:
+		if msg.err != nil {
+			m.err = msg.err
+		} else {
+			// Toggle draft status in all caches - we need to refresh to get the actual new status
+			// For now, just trigger a refresh
+			return m, fetchAllScopesMRs(m.providers)
 		}
 		return m, nil
 
@@ -772,7 +964,7 @@ func (m Model) View() string {
 	list := listStyle.Render(listContent)
 
 	// Help
-	help := helpStyle.Render("↑/↓: navigate | enter: details | o: open in browser | 1/2/3: switch scope | r: refresh | q: quit")
+	help := helpStyle.Render("↑/↓: navigate | enter: details | a: approve/unapprove | D: toggle draft | o: open in browser | 1/2/3: switch scope | r: refresh | q: quit")
 
 	return lipgloss.JoinVertical(
 		lipgloss.Left,
@@ -1208,6 +1400,56 @@ func postReply(p provider.Provider, mr provider.MergeRequest, noteID string, bod
 	}
 }
 
+func approveMR(p provider.Provider, mr provider.MergeRequest) tea.Cmd {
+	return func() tea.Msg {
+		err := p.ApproveMR(mr.ID)
+		if err != nil {
+			return approvalMsg{mrID: mr.ID, err: err}
+		}
+		return approvalMsg{mrID: mr.ID, approved: true}
+	}
+}
+
+func unapproveMR(p provider.Provider, mr provider.MergeRequest) tea.Cmd {
+	return func() tea.Msg {
+		err := p.UnapproveMR(mr.ID)
+		if err != nil {
+			return approvalMsg{mrID: mr.ID, err: err}
+		}
+		return approvalMsg{mrID: mr.ID, approved: false}
+	}
+}
+
+func resolveDiscussion(p provider.Provider, mr provider.MergeRequest, discussionID string) tea.Cmd {
+	return func() tea.Msg {
+		err := p.ResolveDiscussion(mr.IID, discussionID, mr.RepoName)
+		if err != nil {
+			return resolveMsg{discussionID: discussionID, err: err}
+		}
+		return resolveMsg{discussionID: discussionID, resolved: true}
+	}
+}
+
+func unresolveDiscussion(p provider.Provider, mr provider.MergeRequest, discussionID string) tea.Cmd {
+	return func() tea.Msg {
+		err := p.UnresolveDiscussion(mr.IID, discussionID, mr.RepoName)
+		if err != nil {
+			return resolveMsg{discussionID: discussionID, err: err}
+		}
+		return resolveMsg{discussionID: discussionID, resolved: false}
+	}
+}
+
+func toggleDraftStatus(p provider.Provider, mr provider.MergeRequest) tea.Cmd {
+	return func() tea.Msg {
+		err := p.ToggleDraftStatus(mr.ID)
+		if err != nil {
+			return draftMsg{mrID: mr.ID, err: err}
+		}
+		return draftMsg{mrID: mr.ID}
+	}
+}
+
 func openInBrowser(url string) tea.Cmd {
 	return func() tea.Msg {
 		var cmd *exec.Cmd
@@ -1512,7 +1754,7 @@ func (m Model) renderNoteThread() string {
 	if m.composingReply {
 		help = helpStyle.Render("Type your reply | enter: post | esc: cancel")
 	} else {
-		help = helpStyle.Render("↑/↓ j/k: scroll | shift+↑/↓: scroll 20 lines | home/end: top/bottom | r: reply | esc: back | q: quit")
+		help = helpStyle.Render("↑/↓ j/k: scroll | shift+↑/↓: scroll 20 lines | home/end: top/bottom | r: reply | x: resolve/unresolve | esc: back | q: quit")
 	}
 
 	return lipgloss.JoinVertical(

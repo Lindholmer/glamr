@@ -60,6 +60,7 @@ query getAuthoredMergeRequests($first: Int = 50, $after: String) {
         userDiscussionsCount
         discussions(first: 100) {
           nodes {
+            id
             resolved
             resolvable
             notes {
@@ -141,6 +142,7 @@ query getAssignedMergeRequests($first: Int = 50, $after: String) {
         userDiscussionsCount
         discussions(first: 100) {
           nodes {
+            id
             resolved
             resolvable
             notes {
@@ -222,6 +224,7 @@ query getReviewRequestedMergeRequests($first: Int = 50, $after: String) {
         userDiscussionsCount
         discussions(first: 100) {
           nodes {
+            id
             resolved
             resolvable
             notes {
@@ -300,6 +303,7 @@ query getAllMergeRequests($first: Int = 50) {
         userDiscussionsCount
         discussions(first: 100) {
           nodes {
+            id
             resolved
             resolvable
             notes {
@@ -369,6 +373,7 @@ query getAllMergeRequests($first: Int = 50) {
         userDiscussionsCount
         discussions(first: 100) {
           nodes {
+            id
             resolved
             resolvable
             notes {
@@ -438,6 +443,7 @@ query getAllMergeRequests($first: Int = 50) {
         userDiscussionsCount
         discussions(first: 100) {
           nodes {
+            id
             resolved
             resolvable
             notes {

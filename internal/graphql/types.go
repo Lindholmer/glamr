@@ -110,6 +110,7 @@ type DiscussionConnection struct {
 }
 
 type Discussion struct {
+	ID         string         `json:"id"`
 	Resolved   bool           `json:"resolved"`
 	Resolvable bool           `json:"resolvable"`
 	Notes      NoteConnection `json:"notes"`

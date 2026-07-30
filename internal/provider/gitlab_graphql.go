@@ -441,6 +441,82 @@ func (p *GitLabGraphQLProvider) GetMRChanges(mrIID int, repo string) (*MRChanges
 	return changes, nil
 }
 
+func (p *GitLabGraphQLProvider) ResolveDiscussion(mrIID int, discussionID string, repo string) error {
+	urlEncodedRepo := urlEncode(repo)
+	cmd := p.buildGlabCommand("api", fmt.Sprintf("projects/%s/merge_requests/%d/discussions/%s", urlEncodedRepo, mrIID, discussionID),
+		"-X", "PUT", "-f", "resolved=true")
+
+	if _, err := cmd.Output(); err != nil {
+		return fmt.Errorf("failed to resolve discussion: %w", err)
+	}
+
+	return nil
+}
+
+func (p *GitLabGraphQLProvider) UnresolveDiscussion(mrIID int, discussionID string, repo string) error {
+	urlEncodedRepo := urlEncode(repo)
+	cmd := p.buildGlabCommand("api", fmt.Sprintf("projects/%s/merge_requests/%d/discussions/%s", urlEncodedRepo, mrIID, discussionID),
+		"-X", "PUT", "-f", "resolved=false")
+
+	if _, err := cmd.Output(); err != nil {
+		return fmt.Errorf("failed to unresolve discussion: %w", err)
+	}
+
+	return nil
+}
+
+func (p *GitLabGraphQLProvider) ToggleDraftStatus(mrID string) error {
+	// Parse MR ID to get project path and IID
+	parts := strings.Split(mrID, "!")
+	if len(parts) != 2 {
+		return fmt.Errorf("invalid MR ID format: %s", mrID)
+	}
+
+	repo := parts[0]
+	iid := parts[1]
+
+	urlEncodedRepo := urlEncode(repo)
+
+	// First, get the MR to check current draft status
+	cmd := p.buildGlabCommand("api", fmt.Sprintf("projects/%s/merge_requests/%s", urlEncodedRepo, iid))
+	output, err := cmd.Output()
+	if err != nil {
+		return fmt.Errorf("failed to get MR status: %w", err)
+	}
+
+	var mrData struct {
+		Draft bool   `json:"draft"`
+		Title string `json:"title"`
+	}
+	if err := json.Unmarshal(output, &mrData); err != nil {
+		return fmt.Errorf("failed to parse MR data: %w", err)
+	}
+
+	// Toggle draft status by updating the title
+	// GitLab marks MRs as draft if title starts with "Draft: " or "WIP: "
+	newTitle := mrData.Title
+	if mrData.Draft {
+		// Remove draft prefix
+		newTitle = strings.TrimPrefix(newTitle, "Draft: ")
+		newTitle = strings.TrimPrefix(newTitle, "WIP: ")
+		newTitle = strings.TrimPrefix(newTitle, "draft: ")
+		newTitle = strings.TrimPrefix(newTitle, "wip: ")
+	} else {
+		// Add draft prefix
+		newTitle = "Draft: " + newTitle
+	}
+
+	// Update the MR title
+	cmd = p.buildGlabCommand("api", fmt.Sprintf("projects/%s/merge_requests/%s", urlEncodedRepo, iid),
+		"-X", "PUT", "-f", fmt.Sprintf("title=%s", newTitle))
+
+	if _, err := cmd.Output(); err != nil {
+		return fmt.Errorf("failed to toggle draft status: %w", err)
+	}
+
+	return nil
+}
+
 // Helper methods
 
 func (p *GitLabGraphQLProvider) buildGlabCommand(args ...string) *exec.Cmd {
@@ -590,6 +666,8 @@ func (p *GitLabGraphQLProvider) convertGraphQLMR(gqlMR graphql.MergeRequest) Mer
 		}
 
 		// Convert each note in the discussion
+		// For resolvable discussions, we store the discussion ID so we can resolve it later
+		discussionID := extractNumericID(discussion.ID)
 		for _, note := range discussion.Notes.Nodes {
 			// Skip system notes
 			if note.System {
@@ -597,7 +675,7 @@ func (p *GitLabGraphQLProvider) convertGraphQLMR(gqlMR graphql.MergeRequest) Mer
 			}
 
 			mr.Notes = append(mr.Notes, MRNote{
-				ID:         extractNumericID(note.Author.Username), // Not ideal, but GraphQL doesn't give us note ID
+				ID:         discussionID, // Use discussion ID for resolving
 				Author:     note.Author.Username,
 				Body:       note.Body,
 				CreatedAt:  note.CreatedAt.Format(time.RFC3339),

@@ -116,6 +116,15 @@ type Provider interface {
 
 	// GetMRChanges fetches the diff/changes for an MR
 	GetMRChanges(mrIID int, repo string) (*MRChanges, error)
+
+	// ResolveDiscussion marks a discussion as resolved
+	ResolveDiscussion(mrIID int, discussionID string, repo string) error
+
+	// UnresolveDiscussion marks a discussion as unresolved
+	UnresolveDiscussion(mrIID int, discussionID string, repo string) error
+
+	// ToggleDraftStatus toggles the draft status of an MR
+	ToggleDraftStatus(mrID string) error
 }
 
 // PipelineJob represents a CI/CD job

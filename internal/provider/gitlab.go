@@ -814,3 +814,76 @@ func (g *GitLabProvider) GetMRChanges(mrIID int, repo string) (*MRChanges, error
 
 	return changes, nil
 }
+
+func (g *GitLabProvider) ResolveDiscussion(mrIID int, discussionID string, repo string) error {
+	discussionPath := fmt.Sprintf("projects/%s/merge_requests/%d/discussions/%s", g.urlEncode(repo), mrIID, discussionID)
+
+	cmd := g.buildGlabCommand("api", discussionPath, "--method", "PUT", "--raw-field", "resolved=true")
+	output, err := cmd.CombinedOutput()
+	if err != nil {
+		return fmt.Errorf("failed to resolve discussion: %w (output: %s)", err, string(output))
+	}
+	return nil
+}
+
+func (g *GitLabProvider) UnresolveDiscussion(mrIID int, discussionID string, repo string) error {
+	discussionPath := fmt.Sprintf("projects/%s/merge_requests/%d/discussions/%s", g.urlEncode(repo), mrIID, discussionID)
+
+	cmd := g.buildGlabCommand("api", discussionPath, "--method", "PUT", "--raw-field", "resolved=false")
+	output, err := cmd.CombinedOutput()
+	if err != nil {
+		return fmt.Errorf("failed to unresolve discussion: %w (output: %s)", err, string(output))
+	}
+	return nil
+}
+
+func (g *GitLabProvider) ToggleDraftStatus(mrID string) error {
+	// Parse MR ID to get project path and IID
+	parts := strings.Split(mrID, "!")
+	if len(parts) != 2 {
+		return fmt.Errorf("invalid MR ID format: %s", mrID)
+	}
+
+	repo := parts[0]
+	iid := parts[1]
+
+	// First, get the MR to check current draft status
+	mrPath := fmt.Sprintf("projects/%s/merge_requests/%s", g.urlEncode(repo), iid)
+	cmd := g.buildGlabCommand("api", mrPath)
+	output, err := cmd.Output()
+	if err != nil {
+		return fmt.Errorf("failed to get MR status: %w", err)
+	}
+
+	var mrData struct {
+		Draft bool   `json:"draft"`
+		Title string `json:"title"`
+	}
+	if err := json.Unmarshal(output, &mrData); err != nil {
+		return fmt.Errorf("failed to parse MR data: %w", err)
+	}
+
+	// Toggle draft status by updating the title
+	// GitLab marks MRs as draft if title starts with "Draft: " or "WIP: "
+	newTitle := mrData.Title
+	if mrData.Draft {
+		// Remove draft prefix
+		newTitle = strings.TrimPrefix(newTitle, "Draft: ")
+		newTitle = strings.TrimPrefix(newTitle, "WIP: ")
+		newTitle = strings.TrimPrefix(newTitle, "draft: ")
+		newTitle = strings.TrimPrefix(newTitle, "wip: ")
+	} else {
+		// Add draft prefix
+		newTitle = "Draft: " + newTitle
+	}
+
+	// Update the MR title
+	cmd = g.buildGlabCommand("api", mrPath, "--method", "PUT", "--raw-field", fmt.Sprintf("title=%s", newTitle))
+
+	output, err = cmd.CombinedOutput()
+	if err != nil {
+		return fmt.Errorf("failed to toggle draft status: %w (output: %s)", err, string(output))
+	}
+
+	return nil
+}
