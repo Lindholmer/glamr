@@ -64,6 +64,7 @@ type MergeRequest struct {
 	ApprovalsLeft         int                 `json:"approvalsLeft"`
 	ApprovalsRequired     int                 `json:"approvalsRequired"`
 	UserDiscussionsCount  int                 `json:"userDiscussionsCount"`
+	Reviewers             ReviewerConnection  `json:"reviewers"`
 	Discussions           DiscussionConnection `json:"discussions"`
 }
 
@@ -127,4 +128,17 @@ type Note struct {
 	System     bool      `json:"system"`
 	Resolvable bool      `json:"resolvable"`
 	Resolved   bool      `json:"resolved"`
+}
+
+type ReviewerConnection struct {
+	Nodes []Reviewer `json:"nodes"`
+}
+
+type Reviewer struct {
+	Username                 string                    `json:"username"`
+	MergeRequestInteraction  MergeRequestInteraction  `json:"mergeRequestInteraction"`
+}
+
+type MergeRequestInteraction struct {
+	ReviewState string `json:"reviewState"`
 }

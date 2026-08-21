@@ -657,12 +657,43 @@ func (p *GitLabGraphQLProvider) convertGraphQLMR(gqlMR graphql.MergeRequest) Mer
 		}
 	}
 
+	// Extract current user's review state (for reviewing scope)
+	for _, reviewer := range gqlMR.Reviewers.Nodes {
+		if reviewer.Username == p.username {
+			mr.UserReviewState = ReviewState(reviewer.MergeRequestInteraction.ReviewState)
+			break
+		}
+	}
+
 	// Convert and cache discussions/notes
 	mr.Notes = make([]MRNote, 0)
 	for _, discussion := range gqlMR.Discussions.Nodes {
 		// Check for unresolved discussions
 		if discussion.Resolvable && !discussion.Resolved {
 			mr.HasUnresolvedDiscussions = true
+		}
+
+		// Check if user commented but is not the last commenter on unresolved threads
+		if discussion.Resolvable && !discussion.Resolved && len(discussion.Notes.Nodes) > 0 {
+			userCommented := false
+			var lastCommenter string
+
+			for _, note := range discussion.Notes.Nodes {
+				// Skip system notes
+				if note.System {
+					continue
+				}
+
+				if note.Author.Username == p.username {
+					userCommented = true
+				}
+				lastCommenter = note.Author.Username
+			}
+
+			// If user commented but is not the last commenter, mark as needing attention
+			if userCommented && lastCommenter != "" && lastCommenter != p.username {
+				mr.HasUnresolvedReplies = true
+			}
 		}
 
 		// Convert each note in the discussion

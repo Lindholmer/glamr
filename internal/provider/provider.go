@@ -23,6 +23,17 @@ const (
 	PipelineSkipped PipelineStatus = "skipped"
 )
 
+// ReviewState represents the current user's review status
+type ReviewState string
+
+const (
+	ReviewStateUnreviewed      ReviewState = "UNREVIEWED"
+	ReviewStateReviewed        ReviewState = "REVIEWED"
+	ReviewStateApproved        ReviewState = "APPROVED"
+	ReviewStateRequestedChanges ReviewState = "REQUESTED_CHANGES"
+	ReviewStateUnapproved      ReviewState = "UNAPPROVED"
+)
+
 // MergeRequest represents a merge/pull request
 type MergeRequest struct {
 	ID                string
@@ -46,6 +57,8 @@ type MergeRequest struct {
 	UserApproved      bool // Did the current user approve?
 	Approved          bool // Has enough approvals
 	RepoName          string // Repository name (for multi-repo support)
+	UserReviewState   ReviewState // Current user's review status (for reviewing scope)
+	HasUnresolvedReplies bool // User commented but is not the last commenter on unresolved threads
 }
 
 // Pipeline represents a CI/CD pipeline

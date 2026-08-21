@@ -992,14 +992,23 @@ func (m Model) scopeName() string {
 }
 
 func (m Model) renderTabs() string {
-	// Check if there are unreviewed MRs in reviewing tab (ignore drafts)
+	// Check if there are truly unreviewed MRs in reviewing tab
+	// Mark as needing attention if:
+	// 1. UNREVIEWED or UNAPPROVED (not commented/approved/requested changes)
+	// 2. OR has unresolved replies where user is not the last commenter
 	hasUnreviewed := false
 	for _, mr := range m.mrsReviewing {
 		// Skip draft MRs
 		if mr.Status == provider.StatusDraft {
 			continue
 		}
-		if !mr.UserApproved {
+		// Flag if truly unreviewed (not commented/approved/requested changes)
+		if mr.UserReviewState == provider.ReviewStateUnreviewed || mr.UserReviewState == provider.ReviewStateUnapproved {
+			hasUnreviewed = true
+			break
+		}
+		// Also flag if there are unresolved replies where user commented but is not the last commenter
+		if mr.HasUnresolvedReplies {
 			hasUnreviewed = true
 			break
 		}
@@ -1168,40 +1177,90 @@ func (m Model) renderMR(mr provider.MergeRequest, selected bool) string {
 		pipeline = fmt.Sprintf("   %s %s%s", pipelineStyle.Render(pipelineIcon), mr.Pipeline.Status, indicatorStr)
 	}
 
-	// Approval status with color coding
+	// Approval/Review status with color coding
 	var approvalLine string
 	approvalStyle := lipgloss.NewStyle()
 
-	if mr.RequiredApprovals > 0 {
-		if mr.UserApproved && mr.Approved {
-			// You approved AND fully approved - green checkmark
-			approvalStyle = approvalStyle.Foreground(lipgloss.Color("#00ff00"))
-			approvalLine = approvalStyle.Render(fmt.Sprintf("   ✓ You approved | %d/%d", mr.ApprovalCount, mr.RequiredApprovals))
-		} else if mr.UserApproved {
-			// You approved but waiting for others - green circle
-			approvalStyle = approvalStyle.Foreground(lipgloss.Color("#00ff00"))
-			approvalLine = approvalStyle.Render(fmt.Sprintf("   ○ You approved | %d/%d", mr.ApprovalCount, mr.RequiredApprovals))
-		} else if mr.Approved {
-			// Fully approved but not by you - bright checkmark
-			approvalLine = fmt.Sprintf("   ✓ %d/%d approved", mr.ApprovalCount, mr.RequiredApprovals)
+	// For reviewing scope, use review state for coloring
+	if m.scope == provider.ScopeReviewing && mr.UserReviewState != "" {
+		// If there are unresolved replies where user is not the last commenter, show red
+		if mr.HasUnresolvedReplies {
+			approvalStyle = approvalStyle.Foreground(lipgloss.Color("#ff0000"))
+			if mr.RequiredApprovals > 0 {
+				approvalLine = approvalStyle.Render(fmt.Sprintf("   🔴 New replies to review | %d/%d", mr.ApprovalCount, mr.RequiredApprovals))
+			} else {
+				approvalLine = approvalStyle.Render(fmt.Sprintf("   🔴 New replies to review | %d/0", mr.ApprovalCount))
+			}
 		} else {
-			// Waiting for approvals (you haven't approved) - grayscale/dim
-			approvalStyle = approvalStyle.Foreground(lipgloss.Color("#888888"))
-			approvalLine = approvalStyle.Render(fmt.Sprintf("   ○ %d/%d approvals", mr.ApprovalCount, mr.RequiredApprovals))
+			switch mr.UserReviewState {
+			case provider.ReviewStateApproved:
+				// Approved - green
+				approvalStyle = approvalStyle.Foreground(lipgloss.Color("#00ff00"))
+				if mr.RequiredApprovals > 0 {
+					approvalLine = approvalStyle.Render(fmt.Sprintf("   ✓ You approved | %d/%d", mr.ApprovalCount, mr.RequiredApprovals))
+				} else {
+					approvalLine = approvalStyle.Render(fmt.Sprintf("   ✓ You approved | %d/0", mr.ApprovalCount))
+				}
+			case provider.ReviewStateReviewed:
+				// Commented (no approval/changes) - yellow
+				approvalStyle = approvalStyle.Foreground(lipgloss.Color("#ffaa00"))
+				if mr.RequiredApprovals > 0 {
+					approvalLine = approvalStyle.Render(fmt.Sprintf("   💬 You commented | %d/%d", mr.ApprovalCount, mr.RequiredApprovals))
+				} else {
+					approvalLine = approvalStyle.Render(fmt.Sprintf("   💬 You commented | %d/0", mr.ApprovalCount))
+				}
+			case provider.ReviewStateRequestedChanges:
+				// Requested changes - red
+				approvalStyle = approvalStyle.Foreground(lipgloss.Color("#ff0000"))
+				if mr.RequiredApprovals > 0 {
+					approvalLine = approvalStyle.Render(fmt.Sprintf("   ✗ You requested changes | %d/%d", mr.ApprovalCount, mr.RequiredApprovals))
+				} else {
+					approvalLine = approvalStyle.Render(fmt.Sprintf("   ✗ You requested changes | %d/0", mr.ApprovalCount))
+				}
+			default:
+				// Unreviewed/Unapproved - default/white (needs review)
+				if mr.RequiredApprovals > 0 {
+					approvalStyle = approvalStyle.Foreground(lipgloss.Color("#888888"))
+					approvalLine = approvalStyle.Render(fmt.Sprintf("   ○ %d/%d approvals", mr.ApprovalCount, mr.RequiredApprovals))
+				} else {
+					approvalStyle = approvalStyle.Foreground(lipgloss.Color("#888888"))
+					approvalLine = approvalStyle.Render(fmt.Sprintf("   ○ %d/0 approvals (optional)", mr.ApprovalCount))
+				}
+			}
 		}
 	} else {
-		// No approvals required (optional reviews)
-		if mr.UserApproved {
-			// You approved even though optional - green checkmark
-			approvalStyle = approvalStyle.Foreground(lipgloss.Color("#00ff00"))
-			approvalLine = approvalStyle.Render(fmt.Sprintf("   ✓ You approved | %d/0", mr.ApprovalCount))
-		} else if mr.ApprovalCount > 0 {
-			// Others approved but not you
-			approvalLine = fmt.Sprintf("   ✓ %d/0 approved", mr.ApprovalCount)
+		// For authored/assigned scopes, use existing approval logic
+		if mr.RequiredApprovals > 0 {
+			if mr.UserApproved && mr.Approved {
+				// You approved AND fully approved - green checkmark
+				approvalStyle = approvalStyle.Foreground(lipgloss.Color("#00ff00"))
+				approvalLine = approvalStyle.Render(fmt.Sprintf("   ✓ You approved | %d/%d", mr.ApprovalCount, mr.RequiredApprovals))
+			} else if mr.UserApproved {
+				// You approved but waiting for others - green circle
+				approvalStyle = approvalStyle.Foreground(lipgloss.Color("#00ff00"))
+				approvalLine = approvalStyle.Render(fmt.Sprintf("   ○ You approved | %d/%d", mr.ApprovalCount, mr.RequiredApprovals))
+			} else if mr.Approved {
+				// Fully approved but not by you - bright checkmark
+				approvalLine = fmt.Sprintf("   ✓ %d/%d approved", mr.ApprovalCount, mr.RequiredApprovals)
+			} else {
+				// Waiting for approvals (you haven't approved) - grayscale/dim
+				approvalStyle = approvalStyle.Foreground(lipgloss.Color("#888888"))
+				approvalLine = approvalStyle.Render(fmt.Sprintf("   ○ %d/%d approvals", mr.ApprovalCount, mr.RequiredApprovals))
+			}
 		} else {
-			// No approvals yet (optional)
-			approvalStyle = approvalStyle.Foreground(lipgloss.Color("#888888"))
-			approvalLine = approvalStyle.Render("   ○ 0/0 approvals (optional)")
+			// No approvals required (optional reviews)
+			if mr.UserApproved {
+				// You approved even though optional - green checkmark
+				approvalStyle = approvalStyle.Foreground(lipgloss.Color("#00ff00"))
+				approvalLine = approvalStyle.Render(fmt.Sprintf("   ✓ You approved | %d/0", mr.ApprovalCount))
+			} else if mr.ApprovalCount > 0 {
+				// Others approved but not you
+				approvalLine = fmt.Sprintf("   ✓ %d/0 approved", mr.ApprovalCount)
+			} else {
+				// No approvals yet (optional)
+				approvalStyle = approvalStyle.Foreground(lipgloss.Color("#888888"))
+				approvalLine = approvalStyle.Render("   ○ 0/0 approvals (optional)")
+			}
 		}
 	}
 

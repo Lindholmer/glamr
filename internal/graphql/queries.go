@@ -58,6 +58,14 @@ query getAuthoredMergeRequests($first: Int = 50, $after: String) {
         approvalsLeft
         approvalsRequired
         userDiscussionsCount
+        reviewers {
+          nodes {
+            username
+            mergeRequestInteraction {
+              reviewState
+            }
+          }
+        }
         discussions(first: 100) {
           nodes {
             id
@@ -140,6 +148,14 @@ query getAssignedMergeRequests($first: Int = 50, $after: String) {
         approvalsLeft
         approvalsRequired
         userDiscussionsCount
+        reviewers {
+          nodes {
+            username
+            mergeRequestInteraction {
+              reviewState
+            }
+          }
+        }
         discussions(first: 100) {
           nodes {
             id
@@ -222,6 +238,14 @@ query getReviewRequestedMergeRequests($first: Int = 50, $after: String) {
         approvalsLeft
         approvalsRequired
         userDiscussionsCount
+        reviewers {
+          nodes {
+            username
+            mergeRequestInteraction {
+              reviewState
+            }
+          }
+        }
         discussions(first: 100) {
           nodes {
             id
@@ -301,6 +325,14 @@ query getAllMergeRequests($first: Int = 50) {
         approvalsLeft
         approvalsRequired
         userDiscussionsCount
+        reviewers {
+          nodes {
+            username
+            mergeRequestInteraction {
+              reviewState
+            }
+          }
+        }
         discussions(first: 100) {
           nodes {
             id
@@ -371,6 +403,14 @@ query getAllMergeRequests($first: Int = 50) {
         approvalsLeft
         approvalsRequired
         userDiscussionsCount
+        reviewers {
+          nodes {
+            username
+            mergeRequestInteraction {
+              reviewState
+            }
+          }
+        }
         discussions(first: 100) {
           nodes {
             id
@@ -441,6 +481,14 @@ query getAllMergeRequests($first: Int = 50) {
         approvalsLeft
         approvalsRequired
         userDiscussionsCount
+        reviewers {
+          nodes {
+            username
+            mergeRequestInteraction {
+              reviewState
+            }
+          }
+        }
         discussions(first: 100) {
           nodes {
             id
