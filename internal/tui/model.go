@@ -655,7 +655,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			// Cache all three scopes
 			m.mrsAuthored = msg.authored
 			m.mrsAssigned = msg.assigned
-			m.mrsReviewing = msg.reviewing
+			m.mrsReviewing = sortReviewingMRs(msg.reviewing)
 
 			// Set current view based on active scope
 			switch m.scope {
@@ -1619,6 +1619,55 @@ func urlEncode(s string) string {
 	s = strings.ReplaceAll(s, "/", "%2F")
 	s = strings.ReplaceAll(s, " ", "%20")
 	return s
+}
+
+// sortReviewingMRs sorts MRs in the reviewing tab by priority:
+// 1. Unreviewed (not commented/approved/requested changes)
+// 2. Commented (reviewed but not approved/requested changes)
+// 3. Requested changes
+// 4. Approved
+// 5. Drafts (lowest priority)
+func sortReviewingMRs(mrs []provider.MergeRequest) []provider.MergeRequest {
+	// Create a copy to avoid modifying the original slice
+	sorted := make([]provider.MergeRequest, len(mrs))
+	copy(sorted, mrs)
+
+	// Define priority based on review state and draft status
+	getPriority := func(mr provider.MergeRequest) int {
+		// Drafts always go last
+		if mr.Status == provider.StatusDraft {
+			return 5
+		}
+
+		// Check for unresolved replies first - these are highest priority
+		if mr.HasUnresolvedReplies {
+			return 0
+		}
+
+		switch mr.UserReviewState {
+		case provider.ReviewStateUnreviewed, provider.ReviewStateUnapproved:
+			return 1 // Unreviewed
+		case provider.ReviewStateReviewed:
+			return 2 // Commented
+		case provider.ReviewStateRequestedChanges:
+			return 3 // Requested changes
+		case provider.ReviewStateApproved:
+			return 4 // Approved
+		default:
+			return 1 // Treat unknown states as unreviewed
+		}
+	}
+
+	// Sort using the priority function
+	for i := 0; i < len(sorted)-1; i++ {
+		for j := i + 1; j < len(sorted); j++ {
+			if getPriority(sorted[i]) > getPriority(sorted[j]) {
+				sorted[i], sorted[j] = sorted[j], sorted[i]
+			}
+		}
+	}
+
+	return sorted
 }
 
 func (m Model) renderDiff() string {
