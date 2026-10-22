@@ -1,6 +1,7 @@
 package provider
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"os/exec"
@@ -10,6 +11,14 @@ import (
 
 	"glamr/internal/graphql"
 )
+
+// mrPageSize is the number of MRs fetched per GraphQL request. Query cost grows with
+// MRs x discussions; 50 per page took ~22s for a busy reviewer, close to GitLab's 30s
+// request timeout. 10 per page keeps each request at a few seconds.
+const mrPageSize = 10
+
+// graphQLTimeout bounds a single glab invocation so a hung request can't block refreshes forever
+const graphQLTimeout = 60 * time.Second
 
 // GitLabGraphQLProvider implements the Provider interface using GitLab's GraphQL API
 type GitLabGraphQLProvider struct {
@@ -63,7 +72,7 @@ func (p *GitLabGraphQLProvider) ListMRs(scope Scope) ([]MergeRequest, error) {
 	// Fetch all pages
 	for {
 		variables := map[string]interface{}{
-			"first": 50,
+			"first": mrPageSize,
 		}
 		if cursor != "" {
 			variables["after"] = cursor
@@ -520,7 +529,11 @@ func (p *GitLabGraphQLProvider) ToggleDraftStatus(mrID string) error {
 // Helper methods
 
 func (p *GitLabGraphQLProvider) buildGlabCommand(args ...string) *exec.Cmd {
-	cmd := exec.Command("glab", args...)
+	return p.buildGlabCommandContext(context.Background(), args...)
+}
+
+func (p *GitLabGraphQLProvider) buildGlabCommandContext(ctx context.Context, args ...string) *exec.Cmd {
+	cmd := exec.CommandContext(ctx, "glab", args...)
 
 	// Set hostname for API commands
 	if len(args) > 0 && args[0] == "api" {
@@ -550,9 +563,14 @@ func (p *GitLabGraphQLProvider) executeGraphQL(query string, variables map[strin
 		args = append(args, "-F", fmt.Sprintf("%s=%s", key, valueStr))
 	}
 
-	cmd := p.buildGlabCommand(args...)
+	ctx, cancel := context.WithTimeout(context.Background(), graphQLTimeout)
+	defer cancel()
+	cmd := p.buildGlabCommandContext(ctx, args...)
 
 	output, err := cmd.CombinedOutput()
+	if ctx.Err() == context.DeadlineExceeded {
+		return nil, fmt.Errorf("graphql query timed out after %v", graphQLTimeout)
+	}
 	if err != nil {
 		return nil, fmt.Errorf("graphql query failed: %w\nOutput: %s", err, string(output))
 	}

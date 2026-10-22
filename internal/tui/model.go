@@ -26,8 +26,10 @@ type Model struct {
 	loading           bool
 	refreshing        bool // Background refresh in progress
 	err               error
+	refreshErr        error // Last background refresh error (shown in status bar, keeps existing data)
 	cache             *cache.Cache
 	refreshInterval   time.Duration
+	lastRefreshStart  time.Time // When the last refresh was started (successful or not)
 	width             int
 	height            int
 	detailView        *DetailView
@@ -44,7 +46,7 @@ type Model struct {
 	jobLogTitle       string
 	showingNoteThread bool
 	selectedNote      provider.MRNote
-	noteThreadScroll  int    // Scroll offset for note thread view
+	noteThreadScroll  int // Scroll offset for note thread view
 	replyInput        string
 	composingReply    bool
 }
@@ -117,11 +119,12 @@ type draftMsg struct {
 
 func NewModel(providers ...provider.Provider) Model {
 	return Model{
-		providers:       providers,
-		scope:           provider.ScopeAuthored,
-		cache:           cache.NewCache(5 * time.Minute), // 5 minute cache
-		refreshInterval: 5 * time.Minute,                 // Check every 5 minutes
-		loading:         true,
+		providers:        providers,
+		scope:            provider.ScopeAuthored,
+		cache:            cache.NewCache(5 * time.Minute), // 5 minute cache
+		refreshInterval:  5 * time.Minute,                 // Check every 5 minutes
+		loading:          true,
+		lastRefreshStart: time.Now(), // Init starts the first fetch
 	}
 }
 
@@ -531,7 +534,11 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 		case "r":
 			// Manual refresh in background - keep showing current data
+			if m.loading || m.refreshing {
+				return m, nil // Don't stack concurrent refreshes
+			}
 			m.refreshing = true
+			m.lastRefreshStart = time.Now()
 			return m, fetchAllScopesMRs(m.providers)
 
 		case "up", "k":
@@ -550,7 +557,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				// Update scroll to keep cursor visible
 				linesPerMR := 6
 				listHeight := m.height - 12 // Same as View() calculation
-				indicatorLines := 4          // Account for scroll indicators
+				indicatorLines := 4         // Account for scroll indicators
 				availableLines := listHeight - indicatorLines
 				visibleMRs := availableLines / linesPerMR
 				if visibleMRs < 1 {
@@ -646,12 +653,19 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 
 	case allScopesMRsMsg:
+		wasInitialLoad := m.loading
 		m.loading = false
 		m.refreshing = false // Clear refreshing flag
 		if msg.err != nil {
-			m.err = msg.err
+			if wasInitialLoad {
+				m.err = msg.err
+			} else {
+				// Keep showing existing data; retry on the next interval
+				m.refreshErr = msg.err
+			}
 		} else {
 			m.err = nil
+			m.refreshErr = nil
 			// Cache all three scopes
 			m.mrsAuthored = msg.authored
 			m.mrsAssigned = msg.assigned
@@ -694,9 +708,11 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, nil
 
 	case tickMsg:
-		// Auto-refresh if cache is stale - do it in background
-		if m.cache.IsStale() && !m.loading && !m.refreshing {
+		// Auto-refresh in background once per interval. Based on when the last
+		// refresh started (not succeeded), so a failing refresh isn't retried every tick.
+		if time.Since(m.lastRefreshStart) > m.refreshInterval && !m.loading && !m.refreshing {
 			m.refreshing = true
+			m.lastRefreshStart = time.Now()
 			return m, tea.Batch(
 				fetchAllScopesMRs(m.providers), // Fetch all scopes on refresh
 				tickCmd(),
@@ -1061,6 +1077,10 @@ func (m Model) renderStatus() string {
 	status := fmt.Sprintf("Last refresh: %v ago | %d MRs from %d repos", timeSince, len(m.mrs), repoCount)
 	if m.refreshing {
 		status += " | ⟳ Refreshing..."
+	} else if m.refreshErr != nil {
+		// First line only - glab errors include the full command output
+		errLine, _, _ := strings.Cut(m.refreshErr.Error(), "\n")
+		status += " | ⚠ Refresh failed: " + errLine
 	}
 	return statusStyle.Render(status)
 }
@@ -1878,42 +1898,42 @@ func (m Model) renderNoteThread() string {
 // Styles
 var (
 	headerStyle = lipgloss.NewStyle().
-		Bold(true).
-		Foreground(lipgloss.Color("#00ffff")).
-		Padding(1, 2)
+			Bold(true).
+			Foreground(lipgloss.Color("#00ffff")).
+			Padding(1, 2)
 
 	tabStyle = lipgloss.NewStyle().
-		Padding(0, 2).
-		Foreground(lipgloss.Color("#888888"))
+			Padding(0, 2).
+			Foreground(lipgloss.Color("#888888"))
 
 	activeTabStyle = lipgloss.NewStyle().
-		Padding(0, 2).
-		Bold(true).
-		Foreground(lipgloss.Color("#00ffff")).
-		Background(lipgloss.Color("#333333"))
+			Padding(0, 2).
+			Bold(true).
+			Foreground(lipgloss.Color("#00ffff")).
+			Background(lipgloss.Color("#333333"))
 
 	itemStyle = lipgloss.NewStyle().
-		Padding(0, 2).
-		MarginBottom(1)
+			Padding(0, 2).
+			MarginBottom(1)
 
 	selectedItemStyle = lipgloss.NewStyle().
-		Padding(0, 2).
-		MarginBottom(1).
-		Background(lipgloss.Color("#333333"))
+				Padding(0, 2).
+				MarginBottom(1).
+				Background(lipgloss.Color("#333333"))
 
 	statusStyle = lipgloss.NewStyle().
-		Foreground(lipgloss.Color("#888888")).
-		Padding(1, 2)
+			Foreground(lipgloss.Color("#888888")).
+			Padding(1, 2)
 
 	helpStyle = lipgloss.NewStyle().
-		Foreground(lipgloss.Color("#666666")).
-		Padding(0, 2)
+			Foreground(lipgloss.Color("#666666")).
+			Padding(0, 2)
 
 	emptyStyle = lipgloss.NewStyle().
-		Foreground(lipgloss.Color("#888888")).
-		Padding(2, 2)
+			Foreground(lipgloss.Color("#888888")).
+			Padding(2, 2)
 
 	errorStyle = lipgloss.NewStyle().
-		Foreground(lipgloss.Color("#ff0000")).
-		Padding(2, 2)
+			Foreground(lipgloss.Color("#ff0000")).
+			Padding(2, 2)
 )
