@@ -469,3 +469,16 @@ func TestGitHubGetMRChanges(t *testing.T) {
 		t.Errorf("changes =\n%+v\nwant\n%+v", changes.Changes, want)
 	}
 }
+
+// gh prints the API's error body on stdout and only a status line on stderr
+func TestGitHubErrorShowsAPIReason(t *testing.T) {
+	installFakeGh(t, `echo '{"message":"Unprocessable Entity","errors":["Can not approve your own pull request"],"status":"422"}'
+echo 'gh: Unprocessable Entity (HTTP 422)' >&2
+exit 1`)
+
+	err := (&GitHubProvider{}).ApproveMR("octo/app#1")
+	want := "failed to approve PR: Can not approve your own pull request\ngh: Unprocessable Entity (HTTP 422)"
+	if err == nil || err.Error() != want {
+		t.Errorf("error = %q, want %q", err, want)
+	}
+}

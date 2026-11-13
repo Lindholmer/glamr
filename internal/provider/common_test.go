@@ -160,3 +160,28 @@ func TestParseDiscussions(t *testing.T) {
 		t.Error("expected error for invalid JSON")
 	}
 }
+
+func TestAPIErrorMessage(t *testing.T) {
+	tests := []struct {
+		name string
+		body string
+		want string
+	}{
+		{"github own PR", `{"message":"Unprocessable Entity","errors":["Can not approve your own pull request"],"status":"422"}`, "Can not approve your own pull request"},
+		{"github error objects", `{"message":"Validation Failed","errors":[{"resource":"Issue","code":"custom","message":"body is too long"}]}`, "body is too long"},
+		{"github error code only", `{"message":"Validation Failed","errors":[{"resource":"PullRequest","field":"head","code":"invalid"}]}`, "head invalid"},
+		{"github graphql", `{"data":null,"errors":[{"type":"NOT_FOUND","message":"Could not resolve to a PullRequest"}]}`, "Could not resolve to a PullRequest"},
+		{"github plain message", `{"message":"Not Found","documentation_url":"https://docs.github.com"}`, "Not Found"},
+		{"gitlab message", `{"message":"403 Forbidden"}`, "403 Forbidden"},
+		{"gitlab validation", `{"message":{"title":["is too long"],"base":["cannot be merged"]}}`, "base cannot be merged; title is too long"},
+		{"gitlab oauth", `{"error":"insufficient_scope","error_description":"The request requires higher privileges."}`, "insufficient_scope: The request requires higher privileges."},
+		{"not json", `boom`, ""},
+		{"empty", ``, ""},
+		{"array", `[]`, ""},
+	}
+	for _, tt := range tests {
+		if got := apiErrorMessage([]byte(tt.body)); got != tt.want {
+			t.Errorf("%s: apiErrorMessage = %q, want %q", tt.name, got, tt.want)
+		}
+	}
+}

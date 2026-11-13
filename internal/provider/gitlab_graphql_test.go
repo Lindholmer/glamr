@@ -493,3 +493,15 @@ func TestRepoSet(t *testing.T) {
 		t.Errorf("repoSet = %v, want %v", got, want)
 	}
 }
+
+func TestGitLabErrorShowsAPIReason(t *testing.T) {
+	installFakeGlab(t, `echo '{"message":"401 Unauthorized"}'
+echo 'glab: 401 Unauthorized (HTTP 401)' >&2
+exit 1`)
+
+	err := (&GitLabGraphQLProvider{}).RetryJob("1", "team/app")
+	want := "failed to retry job: 401 Unauthorized\nglab: 401 Unauthorized (HTTP 401)"
+	if err == nil || err.Error() != want {
+		t.Errorf("error = %q, want %q", err, want)
+	}
+}

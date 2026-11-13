@@ -210,7 +210,7 @@ func (p *GitHubProvider) graphql(query string, variables map[string]interface{},
 	ctx, cancel := context.WithTimeout(context.Background(), graphQLTimeout)
 	defer cancel()
 
-	output, err := cliCommand(ctx, "gh", p.host, graphQLArgs(query, variables)...).Output()
+	output, err := runCLI(cliCommand(ctx, "gh", p.host, graphQLArgs(query, variables)...))
 	if ctx.Err() == context.DeadlineExceeded {
 		return fmt.Errorf("github graphql query timed out after %v", graphQLTimeout)
 	}
@@ -247,7 +247,7 @@ func (p *GitHubProvider) graphql(query string, variables map[string]interface{},
 func (p *GitHubProvider) api(action string, args ...string) ([]byte, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), graphQLTimeout)
 	defer cancel()
-	output, err := cliCommand(ctx, "gh", p.host, append([]string{"api"}, args...)...).Output()
+	output, err := runCLI(cliCommand(ctx, "gh", p.host, append([]string{"api"}, args...)...))
 	if err != nil {
 		return nil, commandError(action, err)
 	}

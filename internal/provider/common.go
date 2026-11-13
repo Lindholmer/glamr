@@ -8,6 +8,8 @@ import (
 	"net/url"
 	"os/exec"
 	"regexp"
+	"slices"
+	"sort"
 	"strconv"
 	"strings"
 )
@@ -20,14 +22,110 @@ func urlEncode(s string) string {
 	return url.PathEscape(s)
 }
 
-// commandError wraps a failed glab invocation, including glab's stderr (which holds the
-// actual API error, e.g. "401 Unauthorized") when available.
+// commandError describes a failed glab/gh invocation. Both CLIs print the API's JSON error
+// body on stdout and only a status line ("gh: Unprocessable Entity (HTTP 422)") on stderr,
+// so the API's own reason comes first, then the status line.
 func commandError(msg string, err error) error {
-	var exitErr *exec.ExitError
-	if errors.As(err, &exitErr) && len(exitErr.Stderr) > 0 {
-		return fmt.Errorf("%s: %w\nOutput: %s", msg, err, strings.TrimSpace(string(exitErr.Stderr)))
+	var stdout []byte
+	var failed *cliError
+	if errors.As(err, &failed) {
+		stdout = failed.stdout
 	}
-	return fmt.Errorf("%s: %w", msg, err)
+	var stderr string
+	var exitErr *exec.ExitError
+	if errors.As(err, &exitErr) {
+		stderr = strings.TrimSpace(string(exitErr.Stderr))
+	}
+
+	reason := apiErrorMessage(stdout)
+	var text string
+	switch {
+	case reason != "" && stderr != "":
+		text = reason + "\n" + stderr
+	case reason != "":
+		text = reason
+	case stderr != "":
+		text = stderr
+	default:
+		text = err.Error()
+	}
+	return &wrappedError{msg: msg + ": " + text, err: err}
+}
+
+// wrappedError carries a readable message while keeping the cause for errors.Is/As.
+type wrappedError struct {
+	msg string
+	err error
+}
+
+func (e *wrappedError) Error() string { return e.msg }
+func (e *wrappedError) Unwrap() error { return e.err }
+
+// apiErrorMessage extracts the human-readable reason from a GitLab or GitHub JSON error
+// body, e.g. GitHub's {"message":"Unprocessable Entity","errors":["Can not approve your own
+// pull request"]} or GitLab's {"message":"403 Forbidden"}. Returns "" if there is none.
+func apiErrorMessage(body []byte) string {
+	body = bytes.TrimSpace(body)
+	if len(body) == 0 || body[0] != '{' {
+		return ""
+	}
+	var parsed struct {
+		Message          json.RawMessage   `json:"message"`
+		Errors           []json.RawMessage `json:"errors"`
+		Error            string            `json:"error"`
+		ErrorDescription string            `json:"error_description"`
+	}
+	if json.Unmarshal(body, &parsed) != nil {
+		return ""
+	}
+
+	var reasons []string
+	add := func(r string) {
+		if r = strings.TrimSpace(r); r != "" && !slices.Contains(reasons, r) {
+			reasons = append(reasons, r)
+		}
+	}
+
+	// Specific errors (GitHub REST/GraphQL) beat the generic message
+	for _, raw := range parsed.Errors {
+		var text string
+		var obj struct {
+			Message string `json:"message"`
+			Code    string `json:"code"`
+			Field   string `json:"field"`
+		}
+		switch {
+		case json.Unmarshal(raw, &text) == nil:
+			add(text)
+		case json.Unmarshal(raw, &obj) == nil && obj.Message != "":
+			add(obj.Message)
+		case obj.Code != "":
+			add(strings.TrimSpace(obj.Field + " " + obj.Code))
+		}
+	}
+
+	if len(reasons) == 0 && len(parsed.Message) > 0 {
+		var text string
+		var fields map[string][]string // GitLab validation errors: {"title": ["is too long"]}
+		switch {
+		case json.Unmarshal(parsed.Message, &text) == nil:
+			add(text)
+		case json.Unmarshal(parsed.Message, &fields) == nil:
+			keys := make([]string, 0, len(fields))
+			for k := range fields {
+				keys = append(keys, k)
+			}
+			sort.Strings(keys)
+			for _, k := range keys {
+				add(k + " " + strings.Join(fields[k], ", "))
+			}
+		}
+	}
+
+	if parsed.Error != "" {
+		add(strings.TrimSpace(parsed.Error + ": " + parsed.ErrorDescription))
+	}
+	return strings.TrimSuffix(strings.Join(reasons, "; "), ":")
 }
 
 // awaitsReply reports whether a thread (given its comment authors in order) needs the user's
