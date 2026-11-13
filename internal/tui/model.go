@@ -4,7 +4,10 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"runtime"
+	"sort"
+	"strconv"
 	"strings"
 	"time"
 
@@ -41,9 +44,6 @@ type Model struct {
 	diffContent       string
 	diffTitle         string
 	diffScroll        int // Scroll offset for diff view
-	showingJobLog     bool
-	jobLog            string
-	jobLogTitle       string
 	showingNoteThread bool
 	selectedNote      provider.MRNote
 	noteThreadScroll  int // Scroll offset for note thread view
@@ -52,11 +52,6 @@ type Model struct {
 }
 
 // Messages
-type mrsFetchedMsg struct {
-	mrs []provider.MergeRequest
-	err error
-}
-
 type allScopesMRsMsg struct {
 	authored  []provider.MergeRequest
 	assigned  []provider.MergeRequest
@@ -140,517 +135,16 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case tea.WindowSizeMsg:
 		m.width = msg.Width
 		m.height = msg.Height
+		if m.detailView != nil {
+			m.detailView.width, m.detailView.height = msg.Width, msg.Height
+		}
+		if m.filesView != nil {
+			m.filesView.width, m.filesView.height = msg.Width, msg.Height
+		}
 		return m, nil
 
 	case tea.KeyMsg:
-		// Handle composing reply
-		if m.composingReply {
-			switch msg.String() {
-			case "esc":
-				m.composingReply = false
-				m.replyInput = ""
-				return m, nil
-			case "enter":
-				// Post the reply
-				if m.replyInput != "" && len(m.mrs) > 0 {
-					selectedMR := m.mrs[m.cursor]
-					var p provider.Provider
-					if len(m.providers) > 0 {
-						p = m.providers[0]
-					}
-					if p != nil {
-						body := m.replyInput
-						m.replyInput = ""
-						m.composingReply = false
-						return m, postReply(p, selectedMR, m.selectedNote.ID, body)
-					}
-				}
-				return m, nil
-			case "backspace":
-				if len(m.replyInput) > 0 {
-					m.replyInput = m.replyInput[:len(m.replyInput)-1]
-				}
-				return m, nil
-			default:
-				// Add character to input
-				if len(msg.String()) == 1 {
-					m.replyInput += msg.String()
-				}
-				return m, nil
-			}
-		}
-
-		// Handle navigation in note thread view
-		if m.showingNoteThread && !m.composingReply {
-			switch msg.String() {
-			case "up", "k":
-				// Scroll up in note thread
-				if m.noteThreadScroll > 0 {
-					m.noteThreadScroll--
-				}
-				return m, nil
-			case "down", "j":
-				// Scroll down in note thread
-				m.noteThreadScroll++
-				return m, nil
-			case "shift+up":
-				// Scroll up 20 lines
-				m.noteThreadScroll -= 20
-				if m.noteThreadScroll < 0 {
-					m.noteThreadScroll = 0
-				}
-				return m, nil
-			case "shift+down":
-				// Scroll down 20 lines
-				m.noteThreadScroll += 20
-				return m, nil
-			case "home":
-				// Go to top
-				m.noteThreadScroll = 0
-				return m, nil
-			case "end":
-				// Go to bottom - will be clamped in render function
-				m.noteThreadScroll = 999999
-				return m, nil
-			case "r":
-				// Start composing reply
-				m.composingReply = true
-				m.replyInput = ""
-				return m, nil
-			case "x":
-				// Toggle resolve/unresolve discussion
-				if m.selectedNote.Resolvable && m.selectedNote.ID != "" {
-					selectedMR := m.mrs[m.cursor]
-					var p provider.Provider
-					if len(m.providers) > 0 {
-						p = m.providers[0]
-					}
-					if p != nil {
-						if m.selectedNote.Resolved {
-							return m, unresolveDiscussion(p, selectedMR, m.selectedNote.ID)
-						} else {
-							return m, resolveDiscussion(p, selectedMR, m.selectedNote.ID)
-						}
-					}
-				}
-				return m, nil
-			}
-		}
-
-		// Handle navigation in diff view
-		if m.showingDiff {
-			switch msg.String() {
-			case "up", "k":
-				if m.diffScroll > 0 {
-					m.diffScroll--
-				}
-				return m, nil
-			case "down", "j":
-				m.diffScroll++
-				return m, nil
-			case "shift+up":
-				m.diffScroll -= 20
-				if m.diffScroll < 0 {
-					m.diffScroll = 0
-				}
-				return m, nil
-			case "shift+down":
-				m.diffScroll += 20
-				return m, nil
-			case "home":
-				m.diffScroll = 0
-				return m, nil
-			case "end":
-				// Go to bottom - will be clamped in render function
-				m.diffScroll = 999999
-				return m, nil
-			}
-		}
-
-		// Handle escape - exit note thread, job log, diff, files view, or detail view
-		if msg.String() == "esc" {
-			if m.showingDiff {
-				m.showingDiff = false
-				m.diffContent = ""
-				m.diffTitle = ""
-				m.diffScroll = 0
-				return m, nil
-			}
-			if m.showingJobLog {
-				m.showingJobLog = false
-				m.jobLog = ""
-				m.jobLogTitle = ""
-				return m, nil
-			}
-			if m.showingNoteThread {
-				if m.composingReply {
-					// Cancel composing
-					m.composingReply = false
-					m.replyInput = ""
-					return m, nil
-				}
-				// Exit note thread view
-				m.showingNoteThread = false
-				m.selectedNote = provider.MRNote{}
-				return m, nil
-			}
-			if m.showingFiles {
-				// Exit files view, return to detail view
-				m.showingFiles = false
-				m.filesView = nil
-				return m, nil
-			}
-			if m.showingDetail {
-				m.showingDetail = false
-				m.detailView = nil
-				m.err = nil // Clear any detail view errors
-				return m, nil
-			}
-		}
-
-		// Handle navigation in files view
-		if m.showingFiles && m.filesView != nil {
-			switch msg.String() {
-			case "up", "k":
-				if m.filesView.cursor > 0 {
-					m.filesView.cursor--
-				}
-				return m, nil
-			case "down", "j":
-				if m.filesView.cursor < len(m.mrChanges.Changes)-1 {
-					m.filesView.cursor++
-				}
-				return m, nil
-			case "d":
-				// Show diff for selected file
-				if m.filesView.cursor < len(m.mrChanges.Changes) {
-					selectedFile := m.mrChanges.Changes[m.filesView.cursor]
-					return m, renderFileDiff(selectedFile)
-				}
-				return m, nil
-			}
-		}
-
-		// Handle navigation in detail view
-		if m.showingDetail && m.detailView != nil {
-			switch msg.String() {
-			case "left", "h":
-				// Switch to jobs panel
-				m.detailView.activePanel = JobsPanel
-				return m, nil
-			case "right", "l":
-				// Switch to notes panel
-				m.detailView.activePanel = NotesPanel
-				return m, nil
-			case "up", "k":
-				// Navigate up in active panel
-				if m.detailView.activePanel == JobsPanel {
-					if m.detailView.jobsCursor > 0 {
-						m.detailView.jobsCursor--
-					}
-				} else {
-					if m.detailView.notesCursor > 0 {
-						m.detailView.notesCursor--
-					}
-				}
-				return m, nil
-			case "down", "j":
-				// Navigate down in active panel
-				if m.detailView.activePanel == JobsPanel {
-					if m.detailView.jobsCursor < len(m.detailView.jobs)-1 {
-						m.detailView.jobsCursor++
-					}
-				} else {
-					// Count unresolved notes
-					unresolvedCount := 0
-					for _, note := range m.detailView.notes {
-						if !(note.Resolvable && note.Resolved) {
-							unresolvedCount++
-						}
-					}
-					if m.detailView.notesCursor < unresolvedCount-1 {
-						m.detailView.notesCursor++
-					}
-				}
-				return m, nil
-			case "enter":
-				if m.detailView.activePanel == JobsPanel && len(m.detailView.jobs) > 0 {
-					// View job log when jobs panel is active
-					selectedJob := m.detailView.jobs[m.detailView.jobsCursor]
-					var p provider.Provider
-					if len(m.providers) > 0 {
-						p = m.providers[0]
-					}
-					if p != nil {
-						return m, fetchJobLog(p, selectedJob, m.mrs[m.cursor].RepoName)
-					}
-				} else if m.detailView.activePanel == NotesPanel {
-					// Open note thread when notes panel is active
-					// Filter to get unresolved notes
-					var unresolvedNotes []provider.MRNote
-					for _, note := range m.detailView.notes {
-						if note.Resolvable && note.Resolved {
-							continue
-						}
-						unresolvedNotes = append(unresolvedNotes, note)
-					}
-					if len(unresolvedNotes) > 0 && m.detailView.notesCursor < len(unresolvedNotes) {
-						m.selectedNote = unresolvedNotes[m.detailView.notesCursor]
-						m.showingNoteThread = true
-						m.composingReply = false
-						m.replyInput = ""
-						m.noteThreadScroll = 0 // Reset scroll when opening note
-					}
-				}
-				return m, nil
-			case "o":
-				// Open MR in browser
-				selectedMR := m.mrs[m.cursor]
-				return m, openInBrowser(selectedMR.WebURL)
-			case "a":
-				// Toggle approve/unapprove MR
-				selectedMR := m.mrs[m.cursor]
-				var p provider.Provider
-				if len(m.providers) > 0 {
-					p = m.providers[0]
-				}
-				if p != nil {
-					if selectedMR.UserApproved {
-						return m, unapproveMR(p, selectedMR)
-					} else {
-						return m, approveMR(p, selectedMR)
-					}
-				}
-				return m, nil
-			case "D", "shift+d":
-				// Toggle draft status
-				selectedMR := m.mrs[m.cursor]
-				var p provider.Provider
-				if len(m.providers) > 0 {
-					p = m.providers[0]
-				}
-				if p != nil {
-					return m, toggleDraftStatus(p, selectedMR)
-				}
-				return m, nil
-			case "f":
-				// Show files view
-				selectedMR := m.mrs[m.cursor]
-				var p provider.Provider
-				if len(m.providers) > 0 {
-					p = m.providers[0]
-				}
-				if p != nil {
-					return m, fetchMRChanges(p, selectedMR)
-				}
-				return m, nil
-			case "d":
-				// Show full MR diff
-				selectedMR := m.mrs[m.cursor]
-				if m.mrChanges == nil {
-					// Fetch changes first, then auto-show diff
-					var p provider.Provider
-					if len(m.providers) > 0 {
-						p = m.providers[0]
-					}
-					if p != nil {
-						return m, fetchMRChangesForDiff(p, selectedMR)
-					}
-				} else {
-					// We have changes, render the full diff
-					return m, renderFullDiff(m.mrChanges, selectedMR)
-				}
-				return m, nil
-			case "n":
-				// Start composing a new note
-				m.showingNoteThread = true
-				m.composingReply = true
-				m.replyInput = ""
-				m.selectedNote = provider.MRNote{} // Empty note for new thread
-				m.noteThreadScroll = 0
-				return m, nil
-			case "r":
-				// Refresh detail view
-				selectedMR := m.mrs[m.cursor]
-				var p provider.Provider
-				if len(m.providers) > 0 {
-					p = m.providers[0]
-				}
-				if p != nil {
-					return m, fetchDetailData(p, selectedMR)
-				}
-				return m, nil
-			case "t":
-				// Retry failed job
-				if m.detailView.activePanel == JobsPanel && len(m.detailView.jobs) > 0 {
-					selectedJob := m.detailView.jobs[m.detailView.jobsCursor]
-					if selectedJob.Status == "failed" {
-						var p provider.Provider
-						if len(m.providers) > 0 {
-							p = m.providers[0]
-						}
-						if p != nil {
-							return m, retryJob(p, selectedJob, m.mrs[m.cursor].RepoName)
-						}
-					}
-				}
-				return m, nil
-			case "p":
-				// Play/approve manual job
-				if m.detailView.activePanel == JobsPanel && len(m.detailView.jobs) > 0 {
-					selectedJob := m.detailView.jobs[m.detailView.jobsCursor]
-					if selectedJob.Status == "manual" {
-						var p provider.Provider
-						if len(m.providers) > 0 {
-							p = m.providers[0]
-						}
-						if p != nil {
-							return m, playJob(p, selectedJob, m.mrs[m.cursor].RepoName)
-						}
-					}
-				}
-				return m, nil
-			case "c":
-				// Cancel running or pending job
-				if m.detailView.activePanel == JobsPanel && len(m.detailView.jobs) > 0 {
-					selectedJob := m.detailView.jobs[m.detailView.jobsCursor]
-					if selectedJob.Status == "running" || selectedJob.Status == "pending" {
-						var p provider.Provider
-						if len(m.providers) > 0 {
-							p = m.providers[0]
-						}
-						if p != nil {
-							return m, cancelJob(p, selectedJob, m.mrs[m.cursor].RepoName)
-						}
-					}
-				}
-				return m, nil
-			}
-		}
-
-		switch msg.String() {
-		case "ctrl+c", "q":
-			return m, tea.Quit
-
-		case "r":
-			// Manual refresh in background - keep showing current data
-			if m.loading || m.refreshing {
-				return m, nil // Don't stack concurrent refreshes
-			}
-			m.refreshing = true
-			m.lastRefreshStart = time.Now()
-			return m, fetchAllScopesMRs(m.providers)
-
-		case "up", "k":
-			if m.cursor > 0 {
-				m.cursor--
-				// Update scroll to keep cursor visible
-				if m.cursor < m.scroll {
-					m.scroll = m.cursor
-				}
-			}
-			return m, nil
-
-		case "down", "j":
-			if m.cursor < len(m.mrs)-1 {
-				m.cursor++
-				// Update scroll to keep cursor visible
-				linesPerMR := 6
-				listHeight := m.height - 12 // Same as View() calculation
-				indicatorLines := 4         // Account for scroll indicators
-				availableLines := listHeight - indicatorLines
-				visibleMRs := availableLines / linesPerMR
-				if visibleMRs < 1 {
-					visibleMRs = 1
-				}
-				if m.cursor >= m.scroll+visibleMRs {
-					m.scroll = m.cursor - visibleMRs + 1
-				}
-			}
-			return m, nil
-
-		case "1":
-			// Switch to authored scope - use cached data
-			m.scope = provider.ScopeAuthored
-			m.mrs = m.mrsAuthored
-			m.cursor = 0
-			m.scroll = 0
-			return m, nil
-
-		case "2":
-			// Switch to assigned scope - use cached data
-			m.scope = provider.ScopeAssigned
-			m.mrs = m.mrsAssigned
-			m.cursor = 0
-			m.scroll = 0
-			return m, nil
-
-		case "3":
-			// Switch to reviewing scope - use cached data
-			m.scope = provider.ScopeReviewing
-			m.mrs = m.mrsReviewing
-			m.cursor = 0
-			m.scroll = 0
-			return m, nil
-
-		case "o":
-			// Open selected MR in browser from main list
-			if len(m.mrs) > 0 && m.cursor < len(m.mrs) {
-				selectedMR := m.mrs[m.cursor]
-				return m, openInBrowser(selectedMR.WebURL)
-			}
-			return m, nil
-
-		case "a":
-			// Toggle approve/unapprove MR
-			if len(m.mrs) > 0 && m.cursor < len(m.mrs) {
-				selectedMR := m.mrs[m.cursor]
-				var p provider.Provider
-				if len(m.providers) > 0 {
-					p = m.providers[0]
-				}
-				if p != nil {
-					if selectedMR.UserApproved {
-						return m, unapproveMR(p, selectedMR)
-					} else {
-						return m, approveMR(p, selectedMR)
-					}
-				}
-			}
-			return m, nil
-
-		case "D", "shift+d":
-			// Toggle draft status
-			if len(m.mrs) > 0 && m.cursor < len(m.mrs) {
-				selectedMR := m.mrs[m.cursor]
-				var p provider.Provider
-				if len(m.providers) > 0 {
-					p = m.providers[0]
-				}
-				if p != nil {
-					return m, toggleDraftStatus(p, selectedMR)
-				}
-			}
-			return m, nil
-
-		case "enter":
-			// Show detail view for selected MR
-			if len(m.mrs) > 0 && m.cursor < len(m.mrs) {
-				selectedMR := m.mrs[m.cursor]
-				m.detailView = &DetailView{
-					mr:     selectedMR,
-					jobs:   selectedMR.PipelineJobs, // Use cached jobs
-					notes:  selectedMR.Notes,        // Use cached notes
-					width:  m.width,
-					height: m.height,
-				}
-				m.showingDetail = true
-				// Clear any cached changes from previous MR
-				m.mrChanges = nil
-				// No need to fetch - data is already cached in the MR
-			}
-			return m, nil
-		}
+		return m.handleKey(msg)
 
 	case allScopesMRsMsg:
 		wasInitialLoad := m.loading
@@ -672,38 +166,16 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.mrsReviewing = sortReviewingMRs(msg.reviewing)
 
 			// Set current view based on active scope
-			switch m.scope {
-			case provider.ScopeAuthored:
-				m.mrs = m.mrsAuthored
-			case provider.ScopeAssigned:
-				m.mrs = m.mrsAssigned
-			case provider.ScopeReviewing:
-				m.mrs = m.mrsReviewing
-			}
+			m.mrs = m.scopeMRs(m.scope)
 
 			// Reset cursor if out of bounds
 			if m.cursor >= len(m.mrs) {
 				m.cursor = 0
+				m.scroll = 0
 			}
 
 			// Update cache with current scope's data
 			m.cache.Set(m.mrs)
-		}
-		return m, nil
-
-	case mrsFetchedMsg:
-		m.loading = false
-		if msg.err != nil {
-			m.err = msg.err
-		} else {
-			m.err = nil
-			// Atomically replace cache with new data
-			m.cache.Set(msg.mrs)
-			m.mrs = msg.mrs
-			// Reset cursor if out of bounds
-			if m.cursor >= len(m.mrs) {
-				m.cursor = 0
-			}
 		}
 		return m, nil
 
@@ -736,9 +208,11 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if msg.err != nil {
 			m.err = msg.err
 		} else {
-			m.showingJobLog = true
-			m.jobLog = msg.log
-			m.jobLogTitle = msg.title
+			// Job logs reuse the scrollable diff viewer, opened at the end where failures usually are
+			m.diffContent = msg.log
+			m.diffTitle = msg.title
+			m.showingDiff = true
+			m.diffScroll = m.diffMaxScroll()
 		}
 		return m, nil
 
@@ -747,15 +221,8 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.err = msg.err
 		} else {
 			// Refresh detail data after action
-			if m.showingDetail && len(m.mrs) > 0 {
-				selectedMR := m.mrs[m.cursor]
-				var p provider.Provider
-				if len(m.providers) > 0 {
-					p = m.providers[0]
-				}
-				if p != nil {
-					return m, fetchDetailData(p, selectedMR)
-				}
+			if p := m.activeProvider(); m.showingDetail && m.detailView != nil && p != nil {
+				return m, fetchDetailData(p, m.detailView.mr)
 			}
 		}
 		return m, nil
@@ -764,68 +231,17 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if msg.err != nil {
 			m.err = msg.err
 		} else {
-			// Update the MR in the cache
-			for i := range m.mrs {
-				if m.mrs[i].ID == msg.mrID {
-					m.mrs[i].UserApproved = msg.approved
-					if msg.approved {
-						m.mrs[i].ApprovalCount++
-					} else {
-						m.mrs[i].ApprovalCount--
+			// Update every cached copy of the MR. m.mrs aliases one of the scope slices,
+			// so applyApproval is idempotent to avoid counting the same approval twice.
+			for _, list := range [][]provider.MergeRequest{m.mrs, m.mrsAuthored, m.mrsAssigned, m.mrsReviewing} {
+				for i := range list {
+					if list[i].ID == msg.mrID {
+						applyApproval(&list[i], msg.approved)
 					}
-					// Check if it's now fully approved
-					m.mrs[i].Approved = m.mrs[i].ApprovalCount >= m.mrs[i].RequiredApprovals
-					break
 				}
 			}
-			// Also update in the scope caches
-			for i := range m.mrsAuthored {
-				if m.mrsAuthored[i].ID == msg.mrID {
-					m.mrsAuthored[i].UserApproved = msg.approved
-					if msg.approved {
-						m.mrsAuthored[i].ApprovalCount++
-					} else {
-						m.mrsAuthored[i].ApprovalCount--
-					}
-					m.mrsAuthored[i].Approved = m.mrsAuthored[i].ApprovalCount >= m.mrsAuthored[i].RequiredApprovals
-					break
-				}
-			}
-			for i := range m.mrsAssigned {
-				if m.mrsAssigned[i].ID == msg.mrID {
-					m.mrsAssigned[i].UserApproved = msg.approved
-					if msg.approved {
-						m.mrsAssigned[i].ApprovalCount++
-					} else {
-						m.mrsAssigned[i].ApprovalCount--
-					}
-					m.mrsAssigned[i].Approved = m.mrsAssigned[i].ApprovalCount >= m.mrsAssigned[i].RequiredApprovals
-					break
-				}
-			}
-			for i := range m.mrsReviewing {
-				if m.mrsReviewing[i].ID == msg.mrID {
-					m.mrsReviewing[i].UserApproved = msg.approved
-					if msg.approved {
-						m.mrsReviewing[i].ApprovalCount++
-					} else {
-						m.mrsReviewing[i].ApprovalCount--
-					}
-					m.mrsReviewing[i].Approved = m.mrsReviewing[i].ApprovalCount >= m.mrsReviewing[i].RequiredApprovals
-					break
-				}
-			}
-			// Update detail view if showing
-			if m.showingDetail && m.detailView != nil {
-				if m.detailView.mr.ID == msg.mrID {
-					m.detailView.mr.UserApproved = msg.approved
-					if msg.approved {
-						m.detailView.mr.ApprovalCount++
-					} else {
-						m.detailView.mr.ApprovalCount--
-					}
-					m.detailView.mr.Approved = m.detailView.mr.ApprovalCount >= m.detailView.mr.RequiredApprovals
-				}
+			if m.detailView != nil && m.detailView.mr.ID == msg.mrID {
+				applyApproval(&m.detailView.mr, msg.approved)
 			}
 		}
 		return m, nil
@@ -841,9 +257,9 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			// Update in detail view notes cache
 			if m.showingDetail && m.detailView != nil {
 				for i := range m.detailView.notes {
+					// All notes in a thread share the discussion ID
 					if m.detailView.notes[i].ID == msg.discussionID {
 						m.detailView.notes[i].Resolved = msg.resolved
-						break
 					}
 				}
 			}
@@ -854,8 +270,9 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if msg.err != nil {
 			m.err = msg.err
 		} else {
-			// Toggle draft status in all caches - we need to refresh to get the actual new status
-			// For now, just trigger a refresh
+			// Refresh to pick up the new title/draft state
+			m.refreshing = true
+			m.lastRefreshStart = time.Now()
 			return m, fetchAllScopesMRs(m.providers)
 		}
 		return m, nil
@@ -866,24 +283,19 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		} else {
 			m.mrChanges = msg.changes
 
-			if msg.showDiff {
-				// Auto-show full diff after fetching
-				if len(m.mrs) > 0 {
-					selectedMR := m.mrs[m.cursor]
-					return m, renderFullDiff(msg.changes, selectedMR)
+			if mr, ok := m.selectedMR(); ok {
+				if msg.showDiff {
+					// Auto-show full diff after fetching
+					return m, renderFullDiff(msg.changes, mr, m.diffWidth())
 				}
-			} else {
 				// Show files view
-				if len(m.mrs) > 0 {
-					selectedMR := m.mrs[m.cursor]
-					m.filesView = &FilesView{
-						mr:      selectedMR,
-						changes: msg.changes,
-						width:   m.width,
-						height:  m.height,
-					}
-					m.showingFiles = true
+				m.filesView = &FilesView{
+					mr:      mr,
+					changes: msg.changes,
+					width:   m.width,
+					height:  m.height,
 				}
+				m.showingFiles = true
 			}
 		}
 		return m, nil
@@ -895,6 +307,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.diffContent = msg.content
 			m.diffTitle = msg.title
 			m.showingDiff = true
+			m.diffScroll = 0
 		}
 		return m, nil
 
@@ -909,15 +322,8 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.replyInput = ""
 		m.selectedNote = provider.MRNote{}
 
-		if m.showingDetail && len(m.mrs) > 0 {
-			selectedMR := m.mrs[m.cursor]
-			var p provider.Provider
-			if len(m.providers) > 0 {
-				p = m.providers[0]
-			}
-			if p != nil {
-				return m, fetchDetailData(p, selectedMR)
-			}
+		if p := m.activeProvider(); m.showingDetail && m.detailView != nil && p != nil {
+			return m, fetchDetailData(p, m.detailView.mr)
 		}
 		return m, nil
 	}
@@ -927,17 +333,12 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 func (m Model) View() string {
 	if m.err != nil {
-		return errorStyle.Render(fmt.Sprintf("Error: %v\n\nPress q to quit", m.err))
+		return errorStyle.Render(fmt.Sprintf("Error: %v\n\nPress any key to continue, q to quit", m.err))
 	}
 
 	// Show diff if active
 	if m.showingDiff {
 		return m.renderDiff()
-	}
-
-	// Show job log if active
-	if m.showingJobLog {
-		return m.renderJobLog()
 	}
 
 	// Show note thread if active
@@ -1094,17 +495,7 @@ func (m Model) renderMRList() string {
 		return emptyStyle.Render("No merge requests found")
 	}
 
-	// Calculate visible area - each MR takes ~6 lines (status, title, repo, branch, pipeline, approvals, spacing)
-	linesPerMR := 6
-	listHeight := m.height - 12 // Same as View() calculation
-
-	// Account for scroll indicators (2 lines each + 2 blank lines)
-	indicatorLines := 4
-	availableLines := listHeight - indicatorLines
-	visibleMRs := availableLines / linesPerMR
-	if visibleMRs < 1 {
-		visibleMRs = 1
-	}
+	visibleMRs := m.visibleMRCount()
 
 	// Calculate which MRs to show based on scroll (scroll is updated in Update())
 	startIdx := m.scroll
@@ -1302,33 +693,6 @@ func (m Model) renderMR(mr provider.MergeRequest, selected bool) string {
 }
 
 // Commands
-func fetchMRs(p provider.Provider, scope provider.Scope) tea.Cmd {
-	return func() tea.Msg {
-		mrs, err := p.ListMRs(scope)
-		return mrsFetchedMsg{mrs: mrs, err: err}
-	}
-}
-
-func fetchAllMRs(providers []provider.Provider, scope provider.Scope) tea.Cmd {
-	return func() tea.Msg {
-		var allMRs []provider.MergeRequest
-		var lastErr error
-
-		// Fetch from all providers sequentially
-		// Note: The provider itself handles fetching from multiple repos if configured that way
-		for _, p := range providers {
-			mrs, err := p.ListMRs(scope)
-			if err != nil {
-				lastErr = err
-				continue
-			}
-			allMRs = append(allMRs, mrs...)
-		}
-
-		// Return all MRs at once - no partial updates
-		return mrsFetchedMsg{mrs: allMRs, err: lastErr}
-	}
-}
 
 // fetchAllScopesMRs fetches MRs from all three scopes in parallel queries
 func fetchAllScopesMRs(providers []provider.Provider) tea.Cmd {
@@ -1479,10 +843,17 @@ func postReply(p provider.Provider, mr provider.MergeRequest, noteID string, bod
 	}
 }
 
+// toggleApproval approves the MR, or revokes the current user's approval if already given.
+func toggleApproval(p provider.Provider, mr provider.MergeRequest) tea.Cmd {
+	if mr.UserApproved {
+		return unapproveMR(p, mr)
+	}
+	return approveMR(p, mr)
+}
+
 func approveMR(p provider.Provider, mr provider.MergeRequest) tea.Cmd {
 	return func() tea.Msg {
-		err := p.ApproveMR(mr.ID)
-		if err != nil {
+		if err := p.ApproveMR(mr.ID); err != nil {
 			return approvalMsg{mrID: mr.ID, err: err}
 		}
 		return approvalMsg{mrID: mr.ID, approved: true}
@@ -1491,11 +862,32 @@ func approveMR(p provider.Provider, mr provider.MergeRequest) tea.Cmd {
 
 func unapproveMR(p provider.Provider, mr provider.MergeRequest) tea.Cmd {
 	return func() tea.Msg {
-		err := p.UnapproveMR(mr.ID)
-		if err != nil {
+		if err := p.UnapproveMR(mr.ID); err != nil {
 			return approvalMsg{mrID: mr.ID, err: err}
 		}
 		return approvalMsg{mrID: mr.ID, approved: false}
+	}
+}
+
+// applyApproval optimistically updates an MR after the user (un)approved it.
+// It's a no-op if the MR already reflects the change.
+func applyApproval(mr *provider.MergeRequest, approved bool) {
+	if mr.UserApproved == approved {
+		return
+	}
+	mr.UserApproved = approved
+	if approved {
+		mr.ApprovalCount++
+	} else if mr.ApprovalCount > 0 {
+		mr.ApprovalCount--
+	}
+	mr.Approved = mr.ApprovalCount >= mr.RequiredApprovals
+	if mr.UserReviewState != "" {
+		if approved {
+			mr.UserReviewState = provider.ReviewStateApproved
+		} else {
+			mr.UserReviewState = provider.ReviewStateUnapproved
+		}
 	}
 }
 
@@ -1553,92 +945,100 @@ func openInBrowser(url string) tea.Cmd {
 	}
 }
 
-func fetchMRChanges(p provider.Provider, mr provider.MergeRequest) tea.Cmd {
+func fetchMRChanges(p provider.Provider, mr provider.MergeRequest, showDiff bool) tea.Cmd {
 	return func() tea.Msg {
 		changes, err := p.GetMRChanges(mr.IID, mr.RepoName)
 		if err != nil {
 			return mrChangesMsg{err: err}
 		}
-		return mrChangesMsg{changes: changes, showDiff: false}
+		return mrChangesMsg{changes: changes, showDiff: showDiff}
 	}
 }
 
-func fetchMRChangesForDiff(p provider.Provider, mr provider.MergeRequest) tea.Cmd {
-	return func() tea.Msg {
-		changes, err := p.GetMRChanges(mr.IID, mr.RepoName)
-		if err != nil {
-			return mrChangesMsg{err: err}
-		}
-		return mrChangesMsg{changes: changes, showDiff: true}
-	}
-}
-
-func renderFullDiff(changes *provider.MRChanges, mr provider.MergeRequest) tea.Cmd {
+func renderFullDiff(changes *provider.MRChanges, mr provider.MergeRequest, width int) tea.Cmd {
 	return func() tea.Msg {
 		if changes == nil || len(changes.Changes) == 0 {
 			return diffMsg{err: fmt.Errorf("no changes to display")}
 		}
 
-		// Create temp file with all diffs concatenated
-		tmpfile, err := os.CreateTemp("", "glamr-full-diff-*.patch")
+		var diff strings.Builder
+		for _, change := range changes.Changes {
+			diff.WriteString(fileDiffHeader(change))
+			diff.WriteString(change.Diff)
+			if !strings.HasSuffix(change.Diff, "\n") {
+				diff.WriteString("\n")
+			}
+		}
+
+		content, err := formatDiff(diff.String(), width)
 		if err != nil {
 			return diffMsg{err: err}
 		}
-		defer os.Remove(tmpfile.Name())
-
-		// Write all diffs to the temp file
-		for _, change := range changes.Changes {
-			tmpfile.Write([]byte(change.Diff))
-			tmpfile.Write([]byte("\n"))
-		}
-		tmpfile.Close()
-
-		// Run delta with --paging never to capture the formatted output
-		cmd := exec.Command("sh", "-c", fmt.Sprintf("~/.local/bin/delta --paging never < %s", tmpfile.Name()))
-		output, err := cmd.Output()
-		if err != nil {
-			return diffMsg{err: fmt.Errorf("failed to format diff: %w", err)}
-		}
-
 		return diffMsg{
-			content: string(output),
+			content: content,
 			title:   fmt.Sprintf("Full Diff: !%d %s", mr.IID, mr.Title),
 		}
 	}
 }
 
-func renderFileDiff(file provider.FileChange) tea.Cmd {
+func renderFileDiff(file provider.FileChange, width int) tea.Cmd {
 	return func() tea.Msg {
-		// Create temp file with the diff
-		tmpfile, err := os.CreateTemp("", "glamr-diff-*.patch")
+		content, err := formatDiff(fileDiffHeader(file)+file.Diff, width)
 		if err != nil {
 			return diffMsg{err: err}
 		}
-		defer os.Remove(tmpfile.Name())
-
-		if _, err := tmpfile.Write([]byte(file.Diff)); err != nil {
-			return diffMsg{err: err}
-		}
-		tmpfile.Close()
-
-		// Run delta with --paging never to capture the formatted output
-		cmd := exec.Command("sh", "-c", fmt.Sprintf("~/.local/bin/delta --paging never < %s", tmpfile.Name()))
-		output, err := cmd.Output()
-		if err != nil {
-			return diffMsg{err: fmt.Errorf("failed to format diff: %w", err)}
-		}
-
 		return diffMsg{
-			content: string(output),
+			content: content,
 			title:   fmt.Sprintf("File Diff: %s", file.NewPath),
 		}
 	}
 }
 
-func urlEncode(s string) string {
-	s = strings.ReplaceAll(s, "/", "%2F")
-	s = strings.ReplaceAll(s, " ", "%20")
-	return s
+// fileDiffHeader returns git-style file headers. GitLab's API diffs start at the first
+// hunk, so without these delta (and readers) can't tell which file a hunk belongs to.
+func fileDiffHeader(file provider.FileChange) string {
+	oldPath, newPath := "a/"+file.OldPath, "b/"+file.NewPath
+	if file.NewFile {
+		oldPath = "/dev/null"
+	}
+	if file.DeletedFile {
+		newPath = "/dev/null"
+	}
+	return fmt.Sprintf("diff --git a/%s b/%s\n--- %s\n+++ %s\n", file.OldPath, file.NewPath, oldPath, newPath)
+}
+
+// findDelta locates the delta binary on PATH, falling back to ~/.local/bin/delta.
+func findDelta() (string, bool) {
+	if path, err := exec.LookPath("delta"); err == nil {
+		return path, true
+	}
+	if home, err := os.UserHomeDir(); err == nil {
+		path := filepath.Join(home, ".local", "bin", "delta")
+		if info, err := os.Stat(path); err == nil && !info.IsDir() {
+			return path, true
+		}
+	}
+	return "", false
+}
+
+// formatDiff syntax-highlights a unified diff with delta. Without delta, the plain diff is shown.
+func formatDiff(diff string, width int) (string, error) {
+	deltaPath, ok := findDelta()
+	if !ok {
+		return diff, nil
+	}
+
+	args := []string{"--paging", "never"}
+	if width > 0 {
+		args = append(args, "--width", strconv.Itoa(width))
+	}
+	cmd := exec.Command(deltaPath, args...)
+	cmd.Stdin = strings.NewReader(diff)
+	output, err := cmd.Output()
+	if err != nil {
+		return "", fmt.Errorf("failed to format diff with delta: %w", err)
+	}
+	return string(output), nil
 }
 
 // sortReviewingMRs sorts MRs in the reviewing tab by priority:
@@ -1678,45 +1078,87 @@ func sortReviewingMRs(mrs []provider.MergeRequest) []provider.MergeRequest {
 		}
 	}
 
-	// Sort using the priority function
-	for i := 0; i < len(sorted)-1; i++ {
-		for j := i + 1; j < len(sorted); j++ {
-			if getPriority(sorted[i]) > getPriority(sorted[j]) {
-				sorted[i], sorted[j] = sorted[j], sorted[i]
-			}
-		}
-	}
+	// Stable sort keeps the API's order (most recently updated first) within a priority
+	sort.SliceStable(sorted, func(i, j int) bool {
+		return getPriority(sorted[i]) < getPriority(sorted[j])
+	})
 
 	return sorted
+}
+
+// selectedMR returns the MR being acted on: the one open in the detail view (which stays
+// correct even if a background refresh reorders the list), else the highlighted list item.
+func (m Model) selectedMR() (provider.MergeRequest, bool) {
+	if m.showingDetail && m.detailView != nil {
+		return m.detailView.mr, true
+	}
+	if m.cursor >= 0 && m.cursor < len(m.mrs) {
+		return m.mrs[m.cursor], true
+	}
+	return provider.MergeRequest{}, false
+}
+
+// activeProvider returns the provider used for actions. Actions carry the repo in their
+// arguments (MR ID "repo!iid" or an explicit repo), so any configured provider can perform them.
+func (m Model) activeProvider() provider.Provider {
+	if len(m.providers) > 0 {
+		return m.providers[0]
+	}
+	return nil
+}
+
+// scopeMRs returns the cached MRs for a tab.
+func (m Model) scopeMRs(scope provider.Scope) []provider.MergeRequest {
+	switch scope {
+	case provider.ScopeAssigned:
+		return m.mrsAssigned
+	case provider.ScopeReviewing:
+		return m.mrsReviewing
+	default:
+		return m.mrsAuthored
+	}
+}
+
+// visibleMRCount is how many MRs fit in the main list.
+func (m Model) visibleMRCount() int {
+	const linesPerMR = 6     // title, repo, branch, pipeline, approvals, spacing
+	const indicatorLines = 4 // scroll indicators above/below
+	visible := (m.height - 12 - indicatorLines) / linesPerMR
+	if visible < 1 {
+		visible = 1
+	}
+	return visible
+}
+
+// diffWidth is the width passed to delta so its output fits inside the viewer border.
+func (m Model) diffWidth() int {
+	if m.width <= 8 {
+		return 0
+	}
+	return m.width - 8
+}
+
+func (m Model) diffViewportHeight() int {
+	h := m.height - 8 // Account for header, borders, help
+	if h < 5 {
+		h = 5
+	}
+	return h
+}
+
+func (m Model) diffMaxScroll() int {
+	lines := strings.Count(m.diffContent, "\n") + 1
+	return max(lines-m.diffViewportHeight(), 0)
 }
 
 func (m Model) renderDiff() string {
 	header := headerStyle.Render(m.diffTitle)
 
-	// Split content into lines for scrolling
 	lines := strings.Split(m.diffContent, "\n")
+	viewportHeight := m.diffViewportHeight()
 
-	// Calculate visible area
-	viewportHeight := m.height - 8 // Account for header, borders, help
-	if viewportHeight < 5 {
-		viewportHeight = 5
-	}
-
-	// Ensure scroll doesn't go past the end
-	maxScroll := len(lines) - viewportHeight
-	if maxScroll < 0 {
-		maxScroll = 0
-	}
-	if m.diffScroll > maxScroll {
-		m.diffScroll = maxScroll
-	}
-
-	// Calculate which lines to show
-	startIdx := m.diffScroll
-	endIdx := m.diffScroll + viewportHeight
-	if endIdx > len(lines) {
-		endIdx = len(lines)
-	}
+	startIdx := min(max(m.diffScroll, 0), m.diffMaxScroll())
+	endIdx := min(startIdx+viewportHeight, len(lines))
 
 	var visibleLines []string
 
@@ -1726,7 +1168,6 @@ func (m Model) renderDiff() string {
 		visibleLines = append(visibleLines, indicator)
 	}
 
-	// Add visible content lines
 	visibleLines = append(visibleLines, lines[startIdx:endIdx]...)
 
 	// Show scroll indicator if there are lines below
@@ -1737,7 +1178,7 @@ func (m Model) renderDiff() string {
 	}
 
 	diffStyle := lipgloss.NewStyle().
-		Width(m.width - 4).
+		Width(max(m.width-4, 0)).
 		Height(viewportHeight + 2). // +2 for scroll indicators
 		Border(lipgloss.RoundedBorder()).
 		BorderForeground(lipgloss.Color("#666666")).
@@ -1757,63 +1198,26 @@ func (m Model) renderDiff() string {
 	)
 }
 
-func (m Model) renderJobLog() string {
-	header := headerStyle.Render(m.jobLogTitle)
-
-	logStyle := lipgloss.NewStyle().
-		Width(m.width - 4).
-		Height(m.height - 8).
-		Border(lipgloss.RoundedBorder()).
-		BorderForeground(lipgloss.Color("#666666")).
-		Padding(1)
-
-	logContent := logStyle.Render(m.jobLog)
-
-	help := helpStyle.Render("esc: back | q: quit")
-
-	return lipgloss.JoinVertical(
-		lipgloss.Left,
-		header,
-		"",
-		logContent,
-		"",
-		help,
-	)
+func (m Model) noteThreadViewHeight() int {
+	return max(m.height-12, 5)
 }
 
-func (m Model) renderNoteThread() string {
-	selectedMR := m.mrs[m.cursor]
+// noteThreadVisibleLines is how many content lines fit in the thread box (minus padding and border).
+func (m Model) noteThreadVisibleLines() int {
+	return max(m.noteThreadViewHeight()-4, 1)
+}
 
-	var header string
-	if m.selectedNote.ID == "" {
-		// New note
-		header = headerStyle.Render(fmt.Sprintf("New Note - !%d %s", selectedMR.IID, selectedMR.Title))
-	} else {
-		// Existing note thread
-		header = headerStyle.Render(fmt.Sprintf("Discussion - !%d %s", selectedMR.IID, selectedMR.Title))
-	}
-
-	viewHeight := m.height - 12
-	threadStyle := lipgloss.NewStyle().
-		Width(m.width - 4).
-		Height(viewHeight).
-		MaxHeight(viewHeight).
-		Border(lipgloss.RoundedBorder()).
-		BorderForeground(lipgloss.Color("#666666")).
-		Padding(1)
-
+// noteThreadLines returns the full (unscrolled) content of the note thread view.
+func (m Model) noteThreadLines() []string {
 	var allLines []string
 
 	if m.selectedNote.ID != "" {
-		// Show the original note
 		authorStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("#00ffff")).Bold(true)
 		timeStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("#888888"))
 
-		var icon string
+		icon := "💭"
 		if m.selectedNote.Resolvable {
 			icon = "💬"
-		} else {
-			icon = "💭"
 		}
 
 		noteHeader := fmt.Sprintf("%s %s %s",
@@ -1821,57 +1225,64 @@ func (m Model) renderNoteThread() string {
 			authorStyle.Render(fmt.Sprintf("@%s", m.selectedNote.Author)),
 			timeStyle.Render(m.selectedNote.CreatedAt),
 		)
+		if m.selectedNote.Resolved {
+			noteHeader += timeStyle.Render(" (resolved)")
+		}
 
 		allLines = append(allLines, noteHeader, "")
-
-		// Split note body by lines to enable scrolling
-		bodyLines := strings.Split(m.selectedNote.Body, "\n")
-		allLines = append(allLines, bodyLines...)
+		allLines = append(allLines, strings.Split(m.selectedNote.Body, "\n")...)
 		allLines = append(allLines, "", lipgloss.NewStyle().Foreground(lipgloss.Color("#666666")).Render("─────────────────────"), "")
 	}
 
-	// Reply input section
 	if m.composingReply {
 		replyLabel := lipgloss.NewStyle().Foreground(lipgloss.Color("#00ff00")).Bold(true).Render("Your reply:")
 		allLines = append(allLines, replyLabel, "", m.replyInput+"│")
 	} else {
-		promptText := "Press 'r' to reply"
-		allLines = append(allLines, lipgloss.NewStyle().Foreground(lipgloss.Color("#888888")).Render(promptText))
+		allLines = append(allLines, lipgloss.NewStyle().Foreground(lipgloss.Color("#888888")).Render("Press 'r' to reply"))
+	}
+	return allLines
+}
+
+func (m Model) noteThreadMaxScroll() int {
+	return max(len(m.noteThreadLines())-m.noteThreadVisibleLines(), 0)
+}
+
+func (m Model) renderNoteThread() string {
+	mr, _ := m.selectedMR()
+
+	var header string
+	if m.selectedNote.ID == "" {
+		header = headerStyle.Render(fmt.Sprintf("New Note - !%d %s", mr.IID, mr.Title))
+	} else {
+		header = headerStyle.Render(fmt.Sprintf("Discussion - !%d %s", mr.IID, mr.Title))
 	}
 
-	// Calculate visible window
-	visibleLines := viewHeight - 4 // Account for padding and border
+	viewHeight := m.noteThreadViewHeight()
+	threadStyle := lipgloss.NewStyle().
+		Width(max(m.width-4, 0)).
+		Height(viewHeight).
+		MaxHeight(viewHeight).
+		Border(lipgloss.RoundedBorder()).
+		BorderForeground(lipgloss.Color("#666666")).
+		Padding(1)
+
+	allLines := m.noteThreadLines()
 	totalLines := len(allLines)
+	visibleLines := m.noteThreadVisibleLines()
 
-	// Adjust scroll bounds
-	maxScroll := totalLines - visibleLines
-	if maxScroll < 0 {
-		maxScroll = 0
+	// While composing, keep the input line in view
+	scroll := m.noteThreadScroll
+	if m.composingReply {
+		scroll = endOfContent
 	}
-	if m.noteThreadScroll > maxScroll {
-		m.noteThreadScroll = maxScroll
-	}
-	if m.noteThreadScroll < 0 {
-		m.noteThreadScroll = 0
-	}
-
-	// Get visible slice
-	startIdx := m.noteThreadScroll
-	endIdx := startIdx + visibleLines
-	if endIdx > totalLines {
-		endIdx = totalLines
-	}
+	startIdx := min(max(scroll, 0), m.noteThreadMaxScroll())
+	endIdx := min(startIdx+visibleLines, totalLines)
 
 	var visibleContent []string
-
-	// Add scroll indicator if scrolled
 	if startIdx > 0 {
 		visibleContent = append(visibleContent, lipgloss.NewStyle().Foreground(lipgloss.Color("#666666")).Render(fmt.Sprintf("▲ (line %d/%d)", startIdx+1, totalLines)))
 	}
-
 	visibleContent = append(visibleContent, allLines[startIdx:endIdx]...)
-
-	// Add more below indicator
 	if endIdx < totalLines {
 		visibleContent = append(visibleContent, lipgloss.NewStyle().Foreground(lipgloss.Color("#666666")).Render(fmt.Sprintf("▼ (%d more lines)", totalLines-endIdx)))
 	}

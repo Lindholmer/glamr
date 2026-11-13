@@ -3,60 +3,47 @@
 **GitLab Merge Request dashboard** - A fast, terminal-based UI for managing your GitLab merge requests.
 
 ![glamr screenshot](https://img.shields.io/badge/TUI-Terminal%20UI-blue)
-![Go version](https://img.shields.io/badge/Go-1.21%2B-00ADD8)
+![Go version](https://img.shields.io/badge/Go-1.26%2B-00ADD8)
 
 ## Features
 
 ### 📋 MR Management
-- **Three views**: Authored, Assigned, Reviewing tabs with instant switching
-- **Real-time status**: Pipeline status, approvals, conflicts, discussions
-- **Quick actions**: Approve/unapprove, toggle draft, open in browser
-- **Smart indicators**: Red tab for unreviewed MRs, color-coded statuses
+- **Three tabs**: Authored, Assigned and Reviewing, with instant switching (all tabs are preloaded)
+- **Status at a glance**: pipeline status, approvals, conflicts and unresolved discussions
+- **Quick actions**: approve/revoke approval, toggle draft, open in browser
+- **Review triage**: the Reviewing tab is sorted by what needs your attention and turns red when something does (see [Reviewing tab](#reviewing-tab))
 
 ### 🔍 Code Review
-- **Files view**: Browse changed files with status icons (added/modified/deleted/renamed)
-- **Diff viewer**: Syntax-highlighted diffs using [delta](https://github.com/dandavison/delta)
-  - View full MR diff or individual file diffs
-  - Rendered in-TUI with full color support
-  - Scrollable with keyboard navigation
+- **Files view**: browse changed files with status icons (added `+`, deleted `-`, renamed `→`, modified `M`)
+- **Diff viewer**: full MR diff or a single file, syntax-highlighted with [delta](https://github.com/dandavison/delta) when available (plain diff otherwise), scrollable in the TUI
 
 ### 💬 Discussions
-- **View threads**: See unresolved discussions inline
-- **Reply**: Add comments and replies
-- **Resolve**: Mark discussions as resolved/unresolved
-- **Compact display**: First 3 lines with line wrapping
+- **Threads**: unresolved discussions and comments are listed in the detail view (first 3 lines, wrapped)
+- **Reply / new note**: write replies and new comments without leaving the terminal (Unicode and paste supported)
+- **Resolve**: mark threads resolved/unresolved
 
 ### 🚀 CI/CD
-- **Pipeline jobs**: Status, stage, and job details
-- **Job logs**: View full output in-TUI
-- **Job actions**: Retry failed jobs, play manual jobs, cancel running jobs
+- **Pipeline jobs**: name and status of every job in the head pipeline
+- **Job logs**: scrollable in-TUI log viewer that opens at the end of the log
+- **Job actions**: retry failed jobs, play manual jobs, cancel running/pending jobs
 
 ### ⚡ Performance
-- **GraphQL API**: 15-20x faster than REST (3 queries vs ~100)
-- **Parallel loading**: All scopes loaded at startup
-- **Cached data**: Instant tab switching with 5-minute refresh
-- **Background refresh**: Smooth updates without blocking UI
+- **GraphQL API**: one paginated query per tab (10 MRs per request) that includes pipelines, jobs, approvals and discussions
+- **Parallel loading**: all three tabs load concurrently at startup
+- **Background refresh**: every 5 minutes without blocking the UI; a failed refresh keeps the current data and shows the error in the status bar
 
 ## Installation
 
 ### Prerequisites
-- **Go 1.21+** (for building)
-- **[glab](https://gitlab.com/gitlab-org/cli)** - GitLab CLI (must be authenticated)
-- **[delta](https://github.com/dandavison/delta)** - For diff viewing (optional but recommended)
+- **Go 1.26+** (for building, see `go.mod`)
+- **[glab](https://gitlab.com/gitlab-org/cli)** - GitLab CLI, authenticated against your GitLab instance. glamr makes all API calls through `glab`, so it uses glab's credentials.
+- **[delta](https://github.com/dandavison/delta)** - optional, for syntax-highlighted diffs. glamr looks for `delta` on your `PATH`, then in `~/.local/bin/delta`. Without it, diffs are shown as plain text.
 
-### Install delta
-```bash
-# Download and install delta
-curl -L https://github.com/dandavison/delta/releases/latest/download/delta-0.19.2-x86_64-unknown-linux-gnu.tar.gz -o delta.tar.gz
-tar -xzf delta.tar.gz
-mkdir -p ~/.local/bin
-cp delta-*/delta ~/.local/bin/
-rm -rf delta.tar.gz delta-*
-```
+### Install delta (optional)
+Use your package manager (e.g. `brew install git-delta`, `apt install git-delta`, `pacman -S git-delta`) or download a binary from the [releases page](https://github.com/dandavison/delta/releases) and put it on your `PATH` or in `~/.local/bin`.
 
 ### Authenticate with GitLab
 ```bash
-# Authenticate to your GitLab instance
 glab auth login --hostname your.gitlab.host
 ```
 
@@ -64,118 +51,161 @@ glab auth login --hostname your.gitlab.host
 ```bash
 git clone https://github.com/Lindholmer/glamr.git
 cd glamr
-go build -o glamr cmd/glamr/main.go
+go build -o glamr ./cmd/glamr
 
-# Optional: Install to PATH
+# Optional: install to PATH
 sudo mv glamr /usr/local/bin/
+# or: go install ./cmd/glamr
 ```
 
 ## Usage
 
-### Basic Usage
 ```bash
-# Launch with all accessible repos
+# All MRs across every project you can access (uses glab's default host)
+glamr
+
+# A specific GitLab host
 glamr --host your.gitlab.host
 
-# Query specific repositories
+# Only MRs from specific repositories
 glamr --host your.gitlab.host --repo org/project1 --repo org/project2
 
-# Use REST API instead of GraphQL
-glamr --host your.gitlab.host --use-graphql=false
+# Print your authored MRs to stdout instead of starting the TUI
+glamr --host your.gitlab.host --no-tui
 ```
+
+### Flags
+
+| Flag | Default | Description |
+|------|---------|-------------|
+| `--host` | glab's default host | GitLab hostname, e.g. `gitlab.example.com` |
+| `--repo` | all accessible repos | Limit to a repository (`group/project`). Repeat for several repos. |
+| `--no-tui` | `false` | Print authored MRs to stdout and exit |
 
 ### Keyboard Shortcuts
 
-#### Main List View
-- `↑/↓` or `j/k` - Navigate MRs
-- `Enter` - View MR details
-- `a` - Approve/unapprove MR
-- `D` or `Shift+d` - Toggle draft status
-- `o` - Open MR in browser
-- `1/2/3` - Switch between Authored/Assigned/Reviewing tabs
-- `r` - Refresh all data
-- `q` - Quit
+`ctrl+c` quits from anywhere. `q` quits from any view except while typing a note. When an error is shown, any key dismisses it.
+
+#### Main List
+| Key | Action |
+|-----|--------|
+| `↑/↓` or `k/j` | Navigate MRs |
+| `Enter` | Open MR details |
+| `1` / `2` / `3` | Authored / Assigned / Reviewing tab |
+| `a` | Approve, or revoke your approval |
+| `D` | Toggle draft status |
+| `o` | Open MR in browser |
+| `r` | Refresh now |
+| `q` | Quit |
 
 #### Detail View
-- `←/→` or `h/l` - Switch between Jobs/Notes panels
-- `↑/↓` or `j/k` - Navigate within panel
-- `Enter` - View job log (Jobs panel) or note thread (Notes panel)
-- `a` - Approve/unapprove MR
-- `D` - Toggle draft status
-- `f` - Show files view
-- `d` - Show full diff
-- `o` - Open in browser
-- `n` - Create new note
-- `r` - Refresh
-- `Esc` - Back to main list
-
-##### Job Actions (when job selected)
-- `t` - Retry failed job
-- `p` - Play manual job
-- `c` - Cancel running/pending job
+| Key | Action |
+|-----|--------|
+| `←/→` or `h/l` | Switch between Jobs and Notes panels |
+| `↑/↓` or `k/j` | Navigate within the active panel |
+| `Enter` | View job log (Jobs panel) or open thread (Notes panel) |
+| `t` | Retry the selected job (failed jobs) |
+| `p` | Play the selected job (manual jobs) |
+| `c` | Cancel the selected job (running/pending jobs) |
+| `n` | Write a new note |
+| `a` | Approve, or revoke your approval |
+| `D` | Toggle draft status |
+| `f` | Show changed files |
+| `d` | Show full diff |
+| `o` | Open in browser |
+| `r` | Reload jobs and notes |
+| `Esc` | Back to the list |
 
 #### Files View
-- `↑/↓` or `j/k` - Navigate files
-- `d` - View diff for selected file
-- `Esc` - Back to detail view
+| Key | Action |
+|-----|--------|
+| `↑/↓` or `k/j` | Navigate files |
+| `d` | View diff of the selected file |
+| `Esc` | Back to the detail view |
 
-#### Diff View
-- `↑/↓` or `j/k` - Scroll one line
-- `Shift+↑/↓` - Scroll 20 lines
-- `Home` - Jump to top
-- `End` - Jump to bottom
-- `Esc` - Back to previous view
+#### Diff and Job Log Viewer
+| Key | Action |
+|-----|--------|
+| `↑/↓` or `k/j` | Scroll one line |
+| `Shift+↑/↓` | Scroll 20 lines |
+| `Home` / `End` | Jump to top / bottom |
+| `Esc` | Back |
 
-#### Note Thread View
-- `↑/↓` or `j/k` - Scroll one line
-- `Shift+↑/↓` - Scroll 20 lines
-- `Home/End` - Jump to top/bottom
-- `r` - Reply to thread
-- `x` - Resolve/unresolve discussion
-- `Esc` - Back to detail view
+#### Discussion Thread
+| Key | Action |
+|-----|--------|
+| `↑/↓` or `k/j`, `Shift+↑/↓`, `Home/End` | Scroll |
+| `r` | Reply to the thread |
+| `x` | Resolve / unresolve the thread |
+| `Esc` | Back to the detail view |
+
+While writing a reply or note: type (or paste) the text, `Enter` posts it, `Esc` cancels.
+
+### Reviewing tab
+
+MRs where you are a reviewer are sorted by priority:
+
+1. 🔴 **New replies** - an unresolved thread you took part in where someone else had the last word
+2. **Unreviewed** - you haven't reviewed it yet
+3. 💬 **Commented** - you reviewed without approving
+4. ✗ **Requested changes**
+5. ✓ **Approved**
+6. 📝 **Drafts** - always last
+
+The tab label turns red if any non-draft MR is unreviewed or has new replies.
+
+### List indicators
+
+| Icon | Meaning |
+|------|---------|
+| 🟢 / 📝 / ✅ / ❌ | MR open / draft / merged / closed |
+| ✅ / ❌ / 🔵 / ⏸️ / ⚠️ / ⚫ | Pipeline passed / failed / running / pending (incl. manual jobs) / other (e.g. canceled) / no pipeline |
+| ⚠️ conflicts | MR has merge conflicts |
+| 💬 unresolved | MR has unresolved discussions |
+| `n/m` | `n` approvals given, `m` required |
+
+The pipeline status is derived from its jobs: any failed job shows the pipeline as failed, even if GitLab still reports it as running.
 
 ## Architecture
 
 ### Components
-- **TUI Layer** (`internal/tui/`)
-  - Built with [Bubble Tea](https://github.com/charmbracelet/bubbletea)
-  - Styled with [Lipgloss](https://github.com/charmbracelet/lipgloss)
-  - Main list, detail view, files view, diff viewer
-  
-- **Provider Layer** (`internal/provider/`)
-  - Abstraction for VCS providers
-  - GitLab GraphQL implementation (default)
-  - GitLab REST implementation (fallback)
-  
-- **GraphQL Layer** (`internal/graphql/`)
-  - Query templates for all scopes
-  - Type definitions matching GitLab schema
-  - Optimized to stay under complexity limits
-  
-- **Cache Layer** (`internal/cache/`)
-  - In-memory cache with TTL
-  - 5-minute default refresh interval
+- **TUI layer** (`internal/tui/`) - [Bubble Tea](https://github.com/charmbracelet/bubbletea) model and views, styled with [Lipgloss](https://github.com/charmbracelet/lipgloss)
+  - `model.go` - state, message handling, commands and the list/diff/thread views
+  - `keys.go` - key handling, one handler per view
+  - `detail.go`, `files.go` - detail and files views
+- **Provider layer** (`internal/provider/`) - the `Provider` interface and its GitLab implementation
+  - `gitlab_graphql.go` - MR lists come from GraphQL; actions (approve, notes, jobs, diffs) use the REST API.
+  - `common.go` - helpers (ID parsing, pagination, discussions, draft titles, status aggregation, glab errors)
+- **GraphQL layer** (`internal/graphql/`) - query templates and response types
+- **Cache layer** (`internal/cache/`) - thread-safe in-memory cache with TTL
+
+All GitLab access goes through `glab api`, so glamr has no tokens or HTTP client of its own.
 
 ### Data Flow
-1. **Startup**: Parallel GraphQL queries for all 3 scopes (Authored, Assigned, Reviewing)
-2. **Cache**: All MRs, pipeline jobs, and notes stored in memory
-3. **Navigation**: Instant tab switching using cached data
-4. **Refresh**: Background updates every 5 minutes (non-blocking)
-5. **Details**: MR data (jobs, notes) pre-cached at startup
+1. **Startup**: the three tabs are fetched in parallel. Each tab is one GraphQL query, paginated 10 MRs per request to stay well inside GitLab's query complexity and timeout limits.
+2. **Preloading**: pipeline jobs and discussions come with the MR data, so opening an MR is instant.
+3. **Navigation**: switching tabs uses the preloaded data.
+4. **Refresh**: every 5 minutes in the background (or on `r`). Only one refresh runs at a time; a failed refresh is not retried until the next interval.
+5. **Actions**: approve, notes, resolve and job actions update the view right away; reloading details (`r` in the detail view) refetches jobs and discussions.
+
+### MR IDs
+MRs are identified as `group/project!iid` (e.g. `team/app!42`). Actions use this ID, so they work regardless of the current directory and with any number of `--repo` flags.
+
+`--repo` filters your MRs to the given projects after fetching. The same queries run with or without it, so any number of `--repo` flags costs no extra API calls.
 
 ## Configuration
 
-Currently all configuration is via command-line flags. Environment variables and config files may be added in future releases.
+All configuration is via command-line flags.
 
 ### Refresh Interval
-The refresh interval is set to 5 minutes by default. To change it, modify `internal/tui/model.go`:
+The refresh interval is 5 minutes. To change it, edit `NewModel` in `internal/tui/model.go`:
 ```go
 cache:           cache.NewCache(5 * time.Minute),
 refreshInterval: 5 * time.Minute,
 ```
 
 ### Delta Configuration
-glamr uses delta for syntax highlighting. To customize delta's appearance, create `~/.gitconfig`:
+glamr runs `delta --paging never --width <terminal width>`, so delta's settings from `~/.gitconfig` apply:
 ```ini
 [delta]
     syntax-theme = Monokai Extended
@@ -183,51 +213,70 @@ glamr uses delta for syntax highlighting. To customize delta's appearance, creat
     side-by-side = false
 ```
 
-See [delta documentation](https://dandavison.github.io/delta/) for more options.
+See the [delta documentation](https://dandavison.github.io/delta/) for more options.
 
 ## Troubleshooting
 
 ### "401 Unauthorized" error
-- Ensure you're authenticated: `glab auth status`
-- Check hostname: `glab config get host`
+- Check you're authenticated: `glab auth status`
+- Check the hostname you pass with `--host` matches the one glab is logged in to
 - Re-authenticate if needed: `glab auth login --hostname your.gitlab.host`
 
-### GraphQL complexity errors
-- Switch to REST API: `--use-graphql=false`
-- Or reduce number of repos being queried
+### GraphQL complexity or timeout errors
+Each request fetches `mrPageSize` MRs (10) with their jobs and discussions. If a tab still times out (e.g. MRs with very many discussions), lower `mrPageSize` in `internal/provider/gitlab_graphql.go`. `--repo` doesn't help here, since filtering happens after fetching.
 
-### Diff viewer not working
-- Ensure delta is installed: `delta --version`
-- Check it's in PATH: `which delta` or verify at `~/.local/bin/delta`
+### Diffs aren't highlighted
+- glamr falls back to plain diffs when delta isn't found. Check `delta --version`, and that it's on your `PATH` or in `~/.local/bin/`.
 
-### Terminal scrolling issues with pageup/pagedown
-- Use `Shift+↑/↓` for fast scrolling instead
-- Or use `Home/End` keys to jump to top/bottom
+### An action (approve, retry job, comment, ...) fails
+- The TUI shows the error returned by GitLab. `403 Forbidden` usually means you lack the permission in that project, and `insufficient_scope` means glab's token needs the `api` scope.
 
-## Contributing
+### Terminal scrolling issues with PageUp/PageDown
+- Use `Shift+↑/↓` to scroll faster, or `Home/End` to jump to top/bottom.
 
-Contributions are welcome! Please feel free to submit issues or pull requests.
+## Development
 
-### Development Setup
 ```bash
 git clone https://github.com/Lindholmer/glamr.git
 cd glamr
 go mod download
-go build -o glamr cmd/glamr/main.go
+go build -o glamr ./cmd/glamr
 ```
+
+### Running the tests
+```bash
+go test ./...          # unit tests
+go test -race ./...    # with the race detector
+go test -cover ./...   # with coverage
+```
+
+The tests need no GitLab access or network:
+- **GraphQL query tests** check that every MR query selects the same fields.
+- **Provider tests** check the conversion of GraphQL/REST responses, and drive the provider end-to-end through a fake `glab` script placed first on `PATH`. The script records the arguments of each call and returns canned JSON, so tests can check both the parsing and the exact `glab` command lines (pagination cursors, `--repo`, `--hostname`, ...).
+- **TUI tests** send key presses and messages to the Bubble Tea model with an in-memory fake provider, and check the resulting state and the actions sent to the provider.
+- **Cache tests** cover TTL expiry and concurrent access.
+
+The provider tests use a POSIX shell for the fake `glab`, and are skipped on Windows.
+
+`test_graphql.sh` is a manual smoke test against a real GitLab instance: it checks that glab is installed and authenticated, runs a GraphQL query, builds glamr and runs it with `--no-tui`.
 
 ### Project Structure
 ```
 glamr/
-├── cmd/glamr/           # Main entry point
+├── cmd/glamr/           # Entry point and flags
 ├── internal/
-│   ├── cache/          # Caching layer
-│   ├── graphql/        # GraphQL queries and types
-│   ├── provider/       # VCS provider abstraction
-│   └── tui/            # Terminal UI components
+│   ├── cache/           # In-memory MR cache
+│   ├── graphql/         # GraphQL queries and response types
+│   ├── provider/        # Provider interface and the GitLab implementation
+│   └── tui/             # Terminal UI
+├── test_graphql.sh      # Manual smoke test against a real GitLab
 ├── go.mod
 └── README.md
 ```
+
+## Contributing
+
+Contributions are welcome! Please run `gofmt`, `go vet ./...` and `go test ./...` before opening a pull request.
 
 ## Acknowledgments
 
@@ -239,12 +288,12 @@ glamr/
 ## Roadmap
 
 Potential future features:
-- Configuration file support
-- Multiple GitLab instance support simultaneously
-- Merge MR from TUI
+- Configuration file (refresh interval, default host and repos)
+- Multiple GitLab instances at once
+- Merge MRs from the TUI
 - Custom color schemes
 - Relative timestamps ("2h ago")
-- Notification system for new MRs
+- Notifications for new MRs
 
 ---
 

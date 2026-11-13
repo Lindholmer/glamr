@@ -27,38 +27,38 @@ const (
 type ReviewState string
 
 const (
-	ReviewStateUnreviewed      ReviewState = "UNREVIEWED"
-	ReviewStateReviewed        ReviewState = "REVIEWED"
-	ReviewStateApproved        ReviewState = "APPROVED"
+	ReviewStateUnreviewed       ReviewState = "UNREVIEWED"
+	ReviewStateReviewed         ReviewState = "REVIEWED"
+	ReviewStateApproved         ReviewState = "APPROVED"
 	ReviewStateRequestedChanges ReviewState = "REQUESTED_CHANGES"
-	ReviewStateUnapproved      ReviewState = "UNAPPROVED"
+	ReviewStateUnapproved       ReviewState = "UNAPPROVED"
 )
 
 // MergeRequest represents a merge/pull request
 type MergeRequest struct {
-	ID                string
-	IID               int // Internal ID (the number shown in UI)
-	Title             string
-	Author            string
-	SourceBranch      string
-	TargetBranch      string
-	Status            MRStatus
-	WebURL            string
-	CreatedAt         time.Time
-	UpdatedAt         time.Time
-	HasConflicts      bool
+	ID                       string
+	IID                      int // Internal ID (the number shown in UI)
+	Title                    string
+	Author                   string
+	SourceBranch             string
+	TargetBranch             string
+	Status                   MRStatus
+	WebURL                   string
+	CreatedAt                time.Time
+	UpdatedAt                time.Time
+	HasConflicts             bool
 	HasUnresolvedDiscussions bool
-	Pipeline          *Pipeline
-	PipelineJobs      []PipelineJob // Cached pipeline jobs
-	Notes             []MRNote      // Cached notes/discussions
-	ApprovalCount     int
-	RequiredApprovals int
-	ApprovalsLeft     int
-	UserApproved      bool // Did the current user approve?
-	Approved          bool // Has enough approvals
-	RepoName          string // Repository name (for multi-repo support)
-	UserReviewState   ReviewState // Current user's review status (for reviewing scope)
-	HasUnresolvedReplies bool // User commented but is not the last commenter on unresolved threads
+	Pipeline                 *Pipeline
+	PipelineJobs             []PipelineJob // Cached pipeline jobs
+	Notes                    []MRNote      // Cached notes/discussions
+	ApprovalCount            int
+	RequiredApprovals        int
+	ApprovalsLeft            int
+	UserApproved             bool        // Did the current user approve?
+	Approved                 bool        // Has enough approvals
+	RepoName                 string      // Repository name (for multi-repo support)
+	UserReviewState          ReviewState // Current user's review status (for reviewing scope)
+	HasUnresolvedReplies     bool        // User commented but is not the last commenter on unresolved threads
 }
 
 // Pipeline represents a CI/CD pipeline

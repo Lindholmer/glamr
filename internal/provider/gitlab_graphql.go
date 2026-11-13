@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"os/exec"
+	"sort"
 	"strconv"
 	"strings"
 	"time"
@@ -23,21 +24,23 @@ const graphQLTimeout = 60 * time.Second
 // GitLabGraphQLProvider implements the Provider interface using GitLab's GraphQL API
 type GitLabGraphQLProvider struct {
 	host     string
-	repo     string // optional - if empty, fetches from all repos
+	repos    map[string]bool // lower-cased project paths to include; empty means all
 	username string
 }
 
 // NewGitLabGraphQLProvider creates a new GitLab GraphQL provider
-func NewGitLabGraphQLProvider(host, repo string) (*GitLabGraphQLProvider, error) {
+// NewGitLabGraphQLProvider creates a GitLab provider. If repos are given, only MRs in
+// those projects are listed; otherwise MRs from every project are included.
+func NewGitLabGraphQLProvider(host string, repos ...string) (*GitLabGraphQLProvider, error) {
 	p := &GitLabGraphQLProvider{
-		host: host,
-		repo: repo,
+		host:  host,
+		repos: repoSet(repos),
 	}
 
 	// Get current user for filtering
 	username, err := p.GetCurrentUser()
 	if err != nil {
-		return nil, fmt.Errorf("failed to get current user: %w", err)
+		return nil, commandError("failed to get current user", err)
 	}
 	p.username = username
 
@@ -102,8 +105,12 @@ func (p *GitLabGraphQLProvider) ListMRs(scope Scope) ([]MergeRequest, error) {
 			break
 		}
 
-		// Convert GraphQL MRs to provider MRs
+		// Convert GraphQL MRs to provider MRs. The currentUser queries span all projects,
+		// so restrict to the configured repo when one was given (--repo).
 		for _, gqlMR := range conn.Nodes {
+			if len(p.repos) > 0 && !p.repos[strings.ToLower(gqlMR.Project.FullPath)] {
+				continue
+			}
 			mr := p.convertGraphQLMR(gqlMR)
 			allMRs = append(allMRs, mr)
 		}
@@ -118,58 +125,11 @@ func (p *GitLabGraphQLProvider) ListMRs(scope Scope) ([]MergeRequest, error) {
 	return allMRs, nil
 }
 
-// ListAllMRs fetches MRs from all three scopes in a single query
-func (p *GitLabGraphQLProvider) ListAllMRs() (authored, assigned, reviewing []MergeRequest, err error) {
-	variables := map[string]interface{}{
-		"first": 50,
-	}
-
-	response, err := p.executeGraphQL(graphql.AllScopesQuery, variables)
-	if err != nil {
-		return nil, nil, nil, err
-	}
-
-	if response.Data.CurrentUser == nil {
-		return nil, nil, nil, fmt.Errorf("no current user found")
-	}
-
-	// Convert authored MRs
-	if response.Data.CurrentUser.AuthoredMergeRequests != nil {
-		for _, gqlMR := range response.Data.CurrentUser.AuthoredMergeRequests.Nodes {
-			mr := p.convertGraphQLMR(gqlMR)
-			authored = append(authored, mr)
-		}
-	}
-
-	// Convert assigned MRs
-	if response.Data.CurrentUser.AssignedMergeRequests != nil {
-		for _, gqlMR := range response.Data.CurrentUser.AssignedMergeRequests.Nodes {
-			mr := p.convertGraphQLMR(gqlMR)
-			assigned = append(assigned, mr)
-		}
-	}
-
-	// Convert reviewing MRs
-	if response.Data.CurrentUser.ReviewRequestedMergeRequests != nil {
-		for _, gqlMR := range response.Data.CurrentUser.ReviewRequestedMergeRequests.Nodes {
-			mr := p.convertGraphQLMR(gqlMR)
-			reviewing = append(reviewing, mr)
-		}
-	}
-
-	return authored, assigned, reviewing, nil
-}
-
 func (p *GitLabGraphQLProvider) GetMR(id string) (*MergeRequest, error) {
-	// Parse the ID to extract project path and IID
-	// ID format could be "project/path!123" or just "123"
-	parts := strings.Split(id, "!")
-	if len(parts) != 2 {
-		return nil, fmt.Errorf("invalid MR ID format: %s (expected format: project/path!123)", id)
+	projectPath, iid, err := parseMRID(id)
+	if err != nil {
+		return nil, err
 	}
-
-	projectPath := parts[0]
-	iid := parts[1]
 
 	variables := map[string]interface{}{
 		"projectPath": projectPath,
@@ -197,12 +157,12 @@ func (p *GitLabGraphQLProvider) ListRepos() ([]string, error) {
 
 	output, err := cmd.Output()
 	if err != nil {
-		return nil, fmt.Errorf("failed to list repos: %w", err)
+		return nil, commandError("failed to list repos", err)
 	}
 
-	var projects []map[string]interface{}
-	if err := json.Unmarshal(output, &projects); err != nil {
-		return nil, fmt.Errorf("failed to parse repos: %w", err)
+	projects, err := decodeJSONArrays(output)
+	if err != nil {
+		return nil, commandError("failed to parse repos", err)
 	}
 
 	repos := make([]string, 0, len(projects))
@@ -221,119 +181,66 @@ func (p *GitLabGraphQLProvider) GetPipelineJobs(pipelineID string, repo string) 
 	numericID := extractNumericID(pipelineID)
 
 	urlEncodedRepo := urlEncode(repo)
-	cmd := p.buildGlabCommand("api", fmt.Sprintf("projects/%s/pipelines/%s/jobs", urlEncodedRepo, numericID))
+	cmd := p.buildGlabCommand("api", fmt.Sprintf("projects/%s/pipelines/%s/jobs?per_page=100", urlEncodedRepo, numericID), "--paginate")
 
 	output, err := cmd.Output()
 	if err != nil {
-		return nil, fmt.Errorf("failed to get pipeline jobs: %w", err)
+		return nil, commandError("failed to get pipeline jobs", err)
 	}
 
-	var jobs []map[string]interface{}
-	if err := json.Unmarshal(output, &jobs); err != nil {
-		return nil, fmt.Errorf("failed to parse jobs: %w", err)
+	jobs, err := decodeJSONArrays(output)
+	if err != nil {
+		return nil, commandError("failed to parse jobs", err)
 	}
 
-	result := make([]PipelineJob, 0, len(jobs))
-	for _, job := range jobs {
-		result = append(result, PipelineJob{
-			ID:     fmt.Sprintf("%.0f", job["id"].(float64)),
-			Name:   job["name"].(string),
-			Status: job["status"].(string),
-			Stage:  job["stage"].(string),
-		})
-	}
-
-	return result, nil
+	return parseRESTJobs(jobs), nil
 }
 
 func (p *GitLabGraphQLProvider) GetMRNotes(mrIID int, repo string) ([]MRNote, error) {
-	// Use REST API for notes as GraphQL already includes discussions in the MR query
-	// This is mainly for backwards compatibility with the existing interface
+	// Use the REST discussions endpoint so each note carries its discussion ID
+	// (needed for replying/resolving), matching the notes cached from the GraphQL MR query.
 	urlEncodedRepo := urlEncode(repo)
-	cmd := p.buildGlabCommand("api", fmt.Sprintf("projects/%s/merge_requests/%d/notes?per_page=100", urlEncodedRepo, mrIID),
+	cmd := p.buildGlabCommand("api", fmt.Sprintf("projects/%s/merge_requests/%d/discussions?per_page=100", urlEncodedRepo, mrIID),
 		"--paginate")
 
-	output, err := cmd.CombinedOutput()
+	output, err := cmd.Output()
 	if err != nil {
-		return nil, fmt.Errorf("failed to get notes: %w\nOutput: %s", err, string(output))
+		return nil, commandError("failed to get notes", err)
 	}
 
-	var notes []map[string]interface{}
-	decoder := json.NewDecoder(strings.NewReader(string(output)))
-	for decoder.More() {
-		var batch []map[string]interface{}
-		if err := decoder.Decode(&batch); err != nil {
-			break
-		}
-		notes = append(notes, batch...)
-	}
-
-	result := make([]MRNote, 0)
-	for _, note := range notes {
-		if system, ok := note["system"].(bool); ok && system {
-			continue
-		}
-
-		mrNote := MRNote{
-			ID:        fmt.Sprintf("%.0f", note["id"].(float64)),
-			Body:      note["body"].(string),
-			CreatedAt: note["created_at"].(string),
-		}
-
-		if author, ok := note["author"].(map[string]interface{}); ok {
-			mrNote.Author = author["username"].(string)
-		}
-
-		if resolvable, ok := note["resolvable"].(bool); ok {
-			mrNote.Resolvable = resolvable
-		}
-
-		if resolved, ok := note["resolved"].(bool); ok {
-			mrNote.Resolved = resolved
-		}
-
-		result = append(result, mrNote)
-	}
-
-	return result, nil
+	return parseDiscussions(output)
 }
 
 // ApproveMR, UnapproveMR, and job control methods use REST API
 // as GraphQL mutations are more complex and REST works well for these
 
 func (p *GitLabGraphQLProvider) ApproveMR(id string) error {
-	parts := strings.Split(id, "!")
-	if len(parts) != 2 {
-		return fmt.Errorf("invalid MR ID format: %s", id)
+	repo, iid, err := parseMRID(id)
+	if err != nil {
+		return err
 	}
-
-	repo := parts[0]
-	iid := parts[1]
 
 	urlEncodedRepo := urlEncode(repo)
 	cmd := p.buildGlabCommand("api", fmt.Sprintf("projects/%s/merge_requests/%s/approve", urlEncodedRepo, iid), "-X", "POST")
 
 	if _, err := cmd.Output(); err != nil {
-		return fmt.Errorf("failed to approve MR: %w", err)
+		return commandError("failed to approve MR", err)
 	}
 
 	return nil
 }
 
 func (p *GitLabGraphQLProvider) UnapproveMR(id string) error {
-	parts := strings.Split(id, "!")
-	if len(parts) != 2 {
-		return fmt.Errorf("invalid MR ID format: %s", id)
+	repo, iid, err := parseMRID(id)
+	if err != nil {
+		return err
 	}
-
-	repo := parts[0]
-	iid := parts[1]
 
 	urlEncodedRepo := urlEncode(repo)
 	cmd := p.buildGlabCommand("api", fmt.Sprintf("projects/%s/merge_requests/%s/unapprove", urlEncodedRepo, iid), "-X", "POST")
 
 	if _, err := cmd.Output(); err != nil {
-		return fmt.Errorf("failed to unapprove MR: %w", err)
+		return commandError("failed to unapprove MR", err)
 	}
 
 	return nil
@@ -345,7 +252,7 @@ func (p *GitLabGraphQLProvider) CreateNote(mrIID int, body string, repo string) 
 		"-X", "POST", "-f", "body="+body)
 
 	if _, err := cmd.Output(); err != nil {
-		return fmt.Errorf("failed to create note: %w", err)
+		return commandError("failed to create note", err)
 	}
 
 	return nil
@@ -357,7 +264,7 @@ func (p *GitLabGraphQLProvider) ReplyToNote(mrIID int, noteID string, body strin
 		"-X", "POST", "-f", "body="+body)
 
 	if _, err := cmd.Output(); err != nil {
-		return fmt.Errorf("failed to reply to note: %w", err)
+		return commandError("failed to reply to note", err)
 	}
 
 	return nil
@@ -369,7 +276,7 @@ func (p *GitLabGraphQLProvider) GetJobTrace(jobID string, repo string) (string, 
 
 	output, err := cmd.Output()
 	if err != nil {
-		return "", fmt.Errorf("failed to get job trace: %w", err)
+		return "", commandError("failed to get job trace", err)
 	}
 
 	return string(output), nil
@@ -380,7 +287,7 @@ func (p *GitLabGraphQLProvider) RetryJob(jobID string, repo string) error {
 	cmd := p.buildGlabCommand("api", fmt.Sprintf("projects/%s/jobs/%s/retry", urlEncodedRepo, jobID), "-X", "POST")
 
 	if _, err := cmd.Output(); err != nil {
-		return fmt.Errorf("failed to retry job: %w", err)
+		return commandError("failed to retry job", err)
 	}
 
 	return nil
@@ -391,7 +298,7 @@ func (p *GitLabGraphQLProvider) PlayJob(jobID string, repo string) error {
 	cmd := p.buildGlabCommand("api", fmt.Sprintf("projects/%s/jobs/%s/play", urlEncodedRepo, jobID), "-X", "POST")
 
 	if _, err := cmd.Output(); err != nil {
-		return fmt.Errorf("failed to play job: %w", err)
+		return commandError("failed to play job", err)
 	}
 
 	return nil
@@ -402,7 +309,7 @@ func (p *GitLabGraphQLProvider) CancelJob(jobID string, repo string) error {
 	cmd := p.buildGlabCommand("api", fmt.Sprintf("projects/%s/jobs/%s/cancel", urlEncodedRepo, jobID), "-X", "POST")
 
 	if _, err := cmd.Output(); err != nil {
-		return fmt.Errorf("failed to cancel job: %w", err)
+		return commandError("failed to cancel job", err)
 	}
 
 	return nil
@@ -414,7 +321,7 @@ func (p *GitLabGraphQLProvider) GetMRChanges(mrIID int, repo string) (*MRChanges
 
 	output, err := cmd.Output()
 	if err != nil {
-		return nil, fmt.Errorf("failed to get MR changes: %w", err)
+		return nil, commandError("failed to get MR changes", err)
 	}
 
 	var response struct {
@@ -429,7 +336,7 @@ func (p *GitLabGraphQLProvider) GetMRChanges(mrIID int, repo string) (*MRChanges
 	}
 
 	if err := json.Unmarshal(output, &response); err != nil {
-		return nil, fmt.Errorf("failed to parse MR changes: %w", err)
+		return nil, commandError("failed to parse MR changes", err)
 	}
 
 	changes := &MRChanges{
@@ -456,7 +363,7 @@ func (p *GitLabGraphQLProvider) ResolveDiscussion(mrIID int, discussionID string
 		"-X", "PUT", "-f", "resolved=true")
 
 	if _, err := cmd.Output(); err != nil {
-		return fmt.Errorf("failed to resolve discussion: %w", err)
+		return commandError("failed to resolve discussion", err)
 	}
 
 	return nil
@@ -468,21 +375,17 @@ func (p *GitLabGraphQLProvider) UnresolveDiscussion(mrIID int, discussionID stri
 		"-X", "PUT", "-f", "resolved=false")
 
 	if _, err := cmd.Output(); err != nil {
-		return fmt.Errorf("failed to unresolve discussion: %w", err)
+		return commandError("failed to unresolve discussion", err)
 	}
 
 	return nil
 }
 
 func (p *GitLabGraphQLProvider) ToggleDraftStatus(mrID string) error {
-	// Parse MR ID to get project path and IID
-	parts := strings.Split(mrID, "!")
-	if len(parts) != 2 {
-		return fmt.Errorf("invalid MR ID format: %s", mrID)
+	repo, iid, err := parseMRID(mrID)
+	if err != nil {
+		return err
 	}
-
-	repo := parts[0]
-	iid := parts[1]
 
 	urlEncodedRepo := urlEncode(repo)
 
@@ -490,7 +393,7 @@ func (p *GitLabGraphQLProvider) ToggleDraftStatus(mrID string) error {
 	cmd := p.buildGlabCommand("api", fmt.Sprintf("projects/%s/merge_requests/%s", urlEncodedRepo, iid))
 	output, err := cmd.Output()
 	if err != nil {
-		return fmt.Errorf("failed to get MR status: %w", err)
+		return commandError("failed to get MR status", err)
 	}
 
 	var mrData struct {
@@ -498,29 +401,16 @@ func (p *GitLabGraphQLProvider) ToggleDraftStatus(mrID string) error {
 		Title string `json:"title"`
 	}
 	if err := json.Unmarshal(output, &mrData); err != nil {
-		return fmt.Errorf("failed to parse MR data: %w", err)
+		return commandError("failed to parse MR data", err)
 	}
 
-	// Toggle draft status by updating the title
-	// GitLab marks MRs as draft if title starts with "Draft: " or "WIP: "
-	newTitle := mrData.Title
-	if mrData.Draft {
-		// Remove draft prefix
-		newTitle = strings.TrimPrefix(newTitle, "Draft: ")
-		newTitle = strings.TrimPrefix(newTitle, "WIP: ")
-		newTitle = strings.TrimPrefix(newTitle, "draft: ")
-		newTitle = strings.TrimPrefix(newTitle, "wip: ")
-	} else {
-		// Add draft prefix
-		newTitle = "Draft: " + newTitle
-	}
-
-	// Update the MR title
+	// Toggle draft status by updating the title prefix
+	newTitle := toggleDraftTitle(mrData.Title, mrData.Draft)
 	cmd = p.buildGlabCommand("api", fmt.Sprintf("projects/%s/merge_requests/%s", urlEncodedRepo, iid),
-		"-X", "PUT", "-f", fmt.Sprintf("title=%s", newTitle))
+		"-X", "PUT", "-f", "title="+newTitle)
 
 	if _, err := cmd.Output(); err != nil {
-		return fmt.Errorf("failed to toggle draft status: %w", err)
+		return commandError("failed to toggle draft status", err)
 	}
 
 	return nil
@@ -535,9 +425,14 @@ func (p *GitLabGraphQLProvider) buildGlabCommand(args ...string) *exec.Cmd {
 func (p *GitLabGraphQLProvider) buildGlabCommandContext(ctx context.Context, args ...string) *exec.Cmd {
 	cmd := exec.CommandContext(ctx, "glab", args...)
 
+	// No host means "use glab's default/authenticated host"
+	if p.host == "" {
+		return cmd
+	}
+
 	// Set hostname for API commands
 	if len(args) > 0 && args[0] == "api" {
-		cmd.Args = append(cmd.Args[:1], append([]string{"--hostname", p.host}, cmd.Args[1:]...)...)
+		cmd.Args = append(cmd.Args[:2], append([]string{"--hostname", p.host}, cmd.Args[2:]...)...)
 	} else {
 		// For non-api commands, set via environment
 		cmd.Env = append(cmd.Environ(), "GITLAB_HOST="+p.host)
@@ -546,38 +441,48 @@ func (p *GitLabGraphQLProvider) buildGlabCommandContext(ctx context.Context, arg
 	return cmd
 }
 
-func (p *GitLabGraphQLProvider) executeGraphQL(query string, variables map[string]interface{}) (*graphql.GraphQLResponse, error) {
+// graphQLArgs builds the glab arguments for a GraphQL request. Strings are passed with
+// -f (raw) so values such as IIDs ("123") or cursors aren't coerced to other JSON types;
+// everything else uses -F so ints/bools keep their type.
+func graphQLArgs(query string, variables map[string]interface{}) []string {
 	args := []string{"api", "graphql", "-f", "query=" + query}
 
-	// Add variables if provided
-	for key, value := range variables {
-		var valueStr string
-		switch v := value.(type) {
-		case string:
-			valueStr = v
-		case int:
-			valueStr = strconv.Itoa(v)
-		default:
-			valueStr = fmt.Sprintf("%v", v)
-		}
-		args = append(args, "-F", fmt.Sprintf("%s=%s", key, valueStr))
+	keys := make([]string, 0, len(variables))
+	for key := range variables {
+		keys = append(keys, key)
 	}
+	sort.Strings(keys) // deterministic argument order
 
+	for _, key := range keys {
+		switch v := variables[key].(type) {
+		case string:
+			args = append(args, "-f", key+"="+v)
+		case int:
+			args = append(args, "-F", key+"="+strconv.Itoa(v))
+		default:
+			args = append(args, "-F", fmt.Sprintf("%s=%v", key, v))
+		}
+	}
+	return args
+}
+
+func (p *GitLabGraphQLProvider) executeGraphQL(query string, variables map[string]interface{}) (*graphql.GraphQLResponse, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), graphQLTimeout)
 	defer cancel()
-	cmd := p.buildGlabCommandContext(ctx, args...)
+	cmd := p.buildGlabCommandContext(ctx, graphQLArgs(query, variables)...)
 
-	output, err := cmd.CombinedOutput()
+	// Only stdout is JSON; glab may print notices (e.g. update hints) on stderr
+	output, err := cmd.Output()
 	if ctx.Err() == context.DeadlineExceeded {
 		return nil, fmt.Errorf("graphql query timed out after %v", graphQLTimeout)
 	}
 	if err != nil {
-		return nil, fmt.Errorf("graphql query failed: %w\nOutput: %s", err, string(output))
+		return nil, commandError("graphql query failed", err)
 	}
 
 	var response graphql.GraphQLResponse
 	if err := json.Unmarshal(output, &response); err != nil {
-		return nil, fmt.Errorf("failed to parse graphql response: %w", err)
+		return nil, commandError("failed to parse graphql response", err)
 	}
 
 	if len(response.Errors) > 0 {
@@ -661,17 +566,21 @@ func (p *GitLabGraphQLProvider) convertGraphQLMR(gqlMR graphql.MergeRequest) Mer
 			jobStatuses := make([]string, 0, len(gqlMR.HeadPipeline.Jobs.Nodes))
 
 			for _, job := range gqlMR.HeadPipeline.Jobs.Nodes {
+				// GraphQL reports statuses in upper case ("FAILED"); REST and the TUI use lower case
+				status := strings.ToLower(job.Status)
 				mr.PipelineJobs = append(mr.PipelineJobs, PipelineJob{
 					ID:     extractNumericID(job.ID),
 					Name:   job.Name,
-					Status: job.Status,
+					Status: status,
 					Stage:  job.Stage.Name,
 				})
-				jobStatuses = append(jobStatuses, job.Status)
+				jobStatuses = append(jobStatuses, status)
 			}
 
 			// Aggregate job statuses for more accurate pipeline status
-			mr.Pipeline.Status = aggregateJobStatuses(jobStatuses)
+			if aggregated := aggregateJobStatuses(jobStatuses); aggregated != "" {
+				mr.Pipeline.Status = aggregated
+			}
 		}
 	}
 
@@ -738,11 +647,15 @@ func (p *GitLabGraphQLProvider) convertGraphQLMR(gqlMR graphql.MergeRequest) Mer
 	return mr
 }
 
-func (p *GitLabGraphQLProvider) buildPipelineURL(projectPath, webPath string) string {
-	if strings.HasPrefix(webPath, "http") {
-		return webPath
+// repoSet builds the case-insensitive project filter used by ListMRs.
+func repoSet(repos []string) map[string]bool {
+	set := make(map[string]bool, len(repos))
+	for _, r := range repos {
+		if r = strings.TrimSpace(r); r != "" {
+			set[strings.ToLower(r)] = true
+		}
 	}
-	return fmt.Sprintf("https://%s%s", p.host, webPath)
+	return set
 }
 
 func parseIID(iid string) int {
@@ -770,51 +683,14 @@ func convertPipelineStatus(status string) PipelineStatus {
 		return PipelineRunning
 	case "FAILED":
 		return PipelineFailed
-	case "PENDING":
+	case "PENDING", "CREATED", "PREPARING", "WAITING_FOR_RESOURCE", "SCHEDULED":
 		return PipelinePending
 	case "SKIPPED":
 		return PipelineSkipped
+	case "":
+		return PipelinePending
 	default:
-		return PipelinePending
+		// e.g. CANCELED, MANUAL - show the real status rather than pretending it's pending
+		return PipelineStatus(strings.ToLower(status))
 	}
-}
-
-func aggregateJobStatuses(jobStatuses []string) PipelineStatus {
-	hasFailed := false
-	hasRunning := false
-	hasPending := false
-	hasManual := false
-
-	for _, status := range jobStatuses {
-		switch strings.ToLower(status) {
-		case "failed":
-			hasFailed = true
-		case "running":
-			hasRunning = true
-		case "pending":
-			hasPending = true
-		case "manual":
-			hasManual = true
-		}
-	}
-
-	if hasFailed {
-		return PipelineFailed
-	}
-	if hasRunning {
-		return PipelineRunning
-	}
-	if hasPending {
-		return PipelinePending
-	}
-	if hasManual {
-		return PipelinePending
-	}
-	return PipelineSuccess
-}
-
-func urlEncode(s string) string {
-	s = strings.ReplaceAll(s, "/", "%2F")
-	s = strings.ReplaceAll(s, " ", "%20")
-	return s
 }

@@ -6,8 +6,8 @@ import "time"
 // These mirror the GraphQL API response format and are converted to provider.MergeRequest types
 
 type GraphQLResponse struct {
-	Data   Data                   `json:"data"`
-	Errors []GraphQLError         `json:"errors,omitempty"`
+	Data   Data           `json:"data"`
+	Errors []GraphQLError `json:"errors,omitempty"`
 }
 
 type GraphQLError struct {
@@ -21,10 +21,10 @@ type Data struct {
 }
 
 type CurrentUser struct {
-	Username                      string                `json:"username"`
-	AuthoredMergeRequests         *MergeRequestConnection `json:"authoredMergeRequests,omitempty"`
-	AssignedMergeRequests         *MergeRequestConnection `json:"assignedMergeRequests,omitempty"`
-	ReviewRequestedMergeRequests  *MergeRequestConnection `json:"reviewRequestedMergeRequests,omitempty"`
+	Username                     string                  `json:"username"`
+	AuthoredMergeRequests        *MergeRequestConnection `json:"authoredMergeRequests,omitempty"`
+	AssignedMergeRequests        *MergeRequestConnection `json:"assignedMergeRequests,omitempty"`
+	ReviewRequestedMergeRequests *MergeRequestConnection `json:"reviewRequestedMergeRequests,omitempty"`
 }
 
 type Project struct {
@@ -44,28 +44,28 @@ type PageInfo struct {
 }
 
 type MergeRequest struct {
-	IID                   string              `json:"iid"`
-	ID                    string              `json:"id"`
-	Title                 string              `json:"title"`
-	Description           string              `json:"description"`
-	WebURL                string              `json:"webUrl"`
-	SourceBranch          string              `json:"sourceBranch"`
-	TargetBranch          string              `json:"targetBranch"`
-	State                 string              `json:"state"`
-	Draft                 bool                `json:"draft"`
-	CreatedAt             time.Time           `json:"createdAt"`
-	UpdatedAt             time.Time           `json:"updatedAt"`
-	Conflicts             bool                `json:"conflicts"`
-	Author                User                `json:"author"`
-	Project               ProjectInfo         `json:"project"`
-	HeadPipeline          *Pipeline           `json:"headPipeline"`
-	ApprovedBy            UserConnection      `json:"approvedBy"`
-	Approved              bool                `json:"approved"`
-	ApprovalsLeft         int                 `json:"approvalsLeft"`
-	ApprovalsRequired     int                 `json:"approvalsRequired"`
-	UserDiscussionsCount  int                 `json:"userDiscussionsCount"`
-	Reviewers             ReviewerConnection  `json:"reviewers"`
-	Discussions           DiscussionConnection `json:"discussions"`
+	IID                  string               `json:"iid"`
+	ID                   string               `json:"id"`
+	Title                string               `json:"title"`
+	Description          string               `json:"description"`
+	WebURL               string               `json:"webUrl"`
+	SourceBranch         string               `json:"sourceBranch"`
+	TargetBranch         string               `json:"targetBranch"`
+	State                string               `json:"state"`
+	Draft                bool                 `json:"draft"`
+	CreatedAt            time.Time            `json:"createdAt"`
+	UpdatedAt            time.Time            `json:"updatedAt"`
+	Conflicts            bool                 `json:"conflicts"`
+	Author               User                 `json:"author"`
+	Project              ProjectInfo          `json:"project"`
+	HeadPipeline         *Pipeline            `json:"headPipeline"`
+	ApprovedBy           UserConnection       `json:"approvedBy"`
+	Approved             bool                 `json:"approved"`
+	ApprovalsLeft        int                  `json:"approvalsLeft"`
+	ApprovalsRequired    int                  `json:"approvalsRequired"`
+	UserDiscussionsCount int                  `json:"userDiscussionsCount"`
+	Reviewers            ReviewerConnection   `json:"reviewers"`
+	Discussions          DiscussionConnection `json:"discussions"`
 }
 
 type User struct {
@@ -96,10 +96,10 @@ type JobConnection struct {
 }
 
 type Job struct {
-	ID     string    `json:"id"`
-	Name   string    `json:"name"`
-	Status string    `json:"status"`
-	Stage  CiStage   `json:"stage"`
+	ID     string  `json:"id"`
+	Name   string  `json:"name"`
+	Status string  `json:"status"`
+	Stage  CiStage `json:"stage"`
 }
 
 type CiStage struct {
@@ -135,8 +135,8 @@ type ReviewerConnection struct {
 }
 
 type Reviewer struct {
-	Username                 string                    `json:"username"`
-	MergeRequestInteraction  MergeRequestInteraction  `json:"mergeRequestInteraction"`
+	Username                string                  `json:"username"`
+	MergeRequestInteraction MergeRequestInteraction `json:"mergeRequestInteraction"`
 }
 
 type MergeRequestInteraction struct {

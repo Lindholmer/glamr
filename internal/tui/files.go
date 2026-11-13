@@ -17,15 +17,6 @@ type FilesView struct {
 	scroll  int
 }
 
-func NewFilesView(mr provider.MergeRequest, changes *provider.MRChanges, width, height int) FilesView {
-	return FilesView{
-		mr:      mr,
-		changes: changes,
-		width:   width,
-		height:  height,
-	}
-}
-
 func (f FilesView) Render() string {
 	// Header with MR info
 	statusIcon := "🟢"
@@ -40,7 +31,11 @@ func (f FilesView) Render() string {
 
 	titleLine := fmt.Sprintf("%s !%d %s", statusIcon, f.mr.IID, f.mr.Title)
 	metaStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("#888888"))
-	metaLine := fmt.Sprintf("Changed files: %d", len(f.changes.Changes))
+	fileCount := 0
+	if f.changes != nil {
+		fileCount = len(f.changes.Changes)
+	}
+	metaLine := fmt.Sprintf("Changed files: %d", fileCount)
 
 	header := headerStyle.Render(titleLine + "\n" + metaStyle.Render(metaLine))
 
@@ -123,8 +118,8 @@ func (f FilesView) renderFileList(height int) string {
 
 		// Truncate long paths
 		maxWidth := f.width - 10
-		if len(path) > maxWidth {
-			path = "..." + path[len(path)-maxWidth+3:]
+		if r := []rune(path); maxWidth > 3 && len(r) > maxWidth {
+			path = "..." + string(r[len(r)-maxWidth+3:])
 		}
 
 		fileStyle := lipgloss.NewStyle().Foreground(color).Bold(true)
