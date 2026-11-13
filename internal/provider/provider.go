@@ -1,6 +1,10 @@
 package provider
 
-import "time"
+import (
+	"strconv"
+	"strings"
+	"time"
+)
 
 // MRStatus represents the state of a merge request
 type MRStatus string
@@ -59,6 +63,16 @@ type MergeRequest struct {
 	RepoName                 string      // Repository name (for multi-repo support)
 	UserReviewState          ReviewState // Current user's review status (for reviewing scope)
 	HasUnresolvedReplies     bool        // User commented but is not the last commenter on unresolved threads
+	ReviewDecision           string      // GitHub only: APPROVED, CHANGES_REQUESTED, REVIEW_REQUIRED, or "" when no review is required
+}
+
+// Ref is the short reference shown in the UI: "!42" for GitLab MRs, "#42" for GitHub PRs.
+// It follows the ID format ("group/project!42" or "owner/repo#42").
+func (mr MergeRequest) Ref() string {
+	if strings.Contains(mr.ID, "#") {
+		return "#" + strconv.Itoa(mr.IID)
+	}
+	return "!" + strconv.Itoa(mr.IID)
 }
 
 // Pipeline represents a CI/CD pipeline

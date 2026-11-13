@@ -48,7 +48,7 @@ func NewGitLabGraphQLProvider(host string, repos ...string) (*GitLabGraphQLProvi
 }
 
 func (p *GitLabGraphQLProvider) Name() string {
-	return "gitlab-graphql"
+	return "GitLab"
 }
 
 func (p *GitLabGraphQLProvider) GetCurrentUser() (string, error) {
@@ -155,7 +155,7 @@ func (p *GitLabGraphQLProvider) ListRepos() ([]string, error) {
 	cmd := p.buildGlabCommand("api", "projects", "--paginate", "-X", "GET",
 		"-f", "membership=true", "-f", "per_page=100", "-f", "simple=true")
 
-	output, err := cmd.Output()
+	output, err := runCLI(cmd)
 	if err != nil {
 		return nil, commandError("failed to list repos", err)
 	}
@@ -183,7 +183,7 @@ func (p *GitLabGraphQLProvider) GetPipelineJobs(pipelineID string, repo string) 
 	urlEncodedRepo := urlEncode(repo)
 	cmd := p.buildGlabCommand("api", fmt.Sprintf("projects/%s/pipelines/%s/jobs?per_page=100", urlEncodedRepo, numericID), "--paginate")
 
-	output, err := cmd.Output()
+	output, err := runCLI(cmd)
 	if err != nil {
 		return nil, commandError("failed to get pipeline jobs", err)
 	}
@@ -203,7 +203,7 @@ func (p *GitLabGraphQLProvider) GetMRNotes(mrIID int, repo string) ([]MRNote, er
 	cmd := p.buildGlabCommand("api", fmt.Sprintf("projects/%s/merge_requests/%d/discussions?per_page=100", urlEncodedRepo, mrIID),
 		"--paginate")
 
-	output, err := cmd.Output()
+	output, err := runCLI(cmd)
 	if err != nil {
 		return nil, commandError("failed to get notes", err)
 	}
@@ -223,7 +223,7 @@ func (p *GitLabGraphQLProvider) ApproveMR(id string) error {
 	urlEncodedRepo := urlEncode(repo)
 	cmd := p.buildGlabCommand("api", fmt.Sprintf("projects/%s/merge_requests/%s/approve", urlEncodedRepo, iid), "-X", "POST")
 
-	if _, err := cmd.Output(); err != nil {
+	if _, err := runCLI(cmd); err != nil {
 		return commandError("failed to approve MR", err)
 	}
 
@@ -239,7 +239,7 @@ func (p *GitLabGraphQLProvider) UnapproveMR(id string) error {
 	urlEncodedRepo := urlEncode(repo)
 	cmd := p.buildGlabCommand("api", fmt.Sprintf("projects/%s/merge_requests/%s/unapprove", urlEncodedRepo, iid), "-X", "POST")
 
-	if _, err := cmd.Output(); err != nil {
+	if _, err := runCLI(cmd); err != nil {
 		return commandError("failed to unapprove MR", err)
 	}
 
@@ -251,7 +251,7 @@ func (p *GitLabGraphQLProvider) CreateNote(mrIID int, body string, repo string) 
 	cmd := p.buildGlabCommand("api", fmt.Sprintf("projects/%s/merge_requests/%d/notes", urlEncodedRepo, mrIID),
 		"-X", "POST", "-f", "body="+body)
 
-	if _, err := cmd.Output(); err != nil {
+	if _, err := runCLI(cmd); err != nil {
 		return commandError("failed to create note", err)
 	}
 
@@ -263,7 +263,7 @@ func (p *GitLabGraphQLProvider) ReplyToNote(mrIID int, noteID string, body strin
 	cmd := p.buildGlabCommand("api", fmt.Sprintf("projects/%s/merge_requests/%d/discussions/%s/notes", urlEncodedRepo, mrIID, noteID),
 		"-X", "POST", "-f", "body="+body)
 
-	if _, err := cmd.Output(); err != nil {
+	if _, err := runCLI(cmd); err != nil {
 		return commandError("failed to reply to note", err)
 	}
 
@@ -274,7 +274,7 @@ func (p *GitLabGraphQLProvider) GetJobTrace(jobID string, repo string) (string, 
 	urlEncodedRepo := urlEncode(repo)
 	cmd := p.buildGlabCommand("api", fmt.Sprintf("projects/%s/jobs/%s/trace", urlEncodedRepo, jobID))
 
-	output, err := cmd.Output()
+	output, err := runCLI(cmd)
 	if err != nil {
 		return "", commandError("failed to get job trace", err)
 	}
@@ -286,7 +286,7 @@ func (p *GitLabGraphQLProvider) RetryJob(jobID string, repo string) error {
 	urlEncodedRepo := urlEncode(repo)
 	cmd := p.buildGlabCommand("api", fmt.Sprintf("projects/%s/jobs/%s/retry", urlEncodedRepo, jobID), "-X", "POST")
 
-	if _, err := cmd.Output(); err != nil {
+	if _, err := runCLI(cmd); err != nil {
 		return commandError("failed to retry job", err)
 	}
 
@@ -297,7 +297,7 @@ func (p *GitLabGraphQLProvider) PlayJob(jobID string, repo string) error {
 	urlEncodedRepo := urlEncode(repo)
 	cmd := p.buildGlabCommand("api", fmt.Sprintf("projects/%s/jobs/%s/play", urlEncodedRepo, jobID), "-X", "POST")
 
-	if _, err := cmd.Output(); err != nil {
+	if _, err := runCLI(cmd); err != nil {
 		return commandError("failed to play job", err)
 	}
 
@@ -308,7 +308,7 @@ func (p *GitLabGraphQLProvider) CancelJob(jobID string, repo string) error {
 	urlEncodedRepo := urlEncode(repo)
 	cmd := p.buildGlabCommand("api", fmt.Sprintf("projects/%s/jobs/%s/cancel", urlEncodedRepo, jobID), "-X", "POST")
 
-	if _, err := cmd.Output(); err != nil {
+	if _, err := runCLI(cmd); err != nil {
 		return commandError("failed to cancel job", err)
 	}
 
@@ -319,7 +319,7 @@ func (p *GitLabGraphQLProvider) GetMRChanges(mrIID int, repo string) (*MRChanges
 	urlEncodedRepo := urlEncode(repo)
 	cmd := p.buildGlabCommand("api", fmt.Sprintf("projects/%s/merge_requests/%d/changes", urlEncodedRepo, mrIID))
 
-	output, err := cmd.Output()
+	output, err := runCLI(cmd)
 	if err != nil {
 		return nil, commandError("failed to get MR changes", err)
 	}
@@ -362,7 +362,7 @@ func (p *GitLabGraphQLProvider) ResolveDiscussion(mrIID int, discussionID string
 	cmd := p.buildGlabCommand("api", fmt.Sprintf("projects/%s/merge_requests/%d/discussions/%s", urlEncodedRepo, mrIID, discussionID),
 		"-X", "PUT", "-f", "resolved=true")
 
-	if _, err := cmd.Output(); err != nil {
+	if _, err := runCLI(cmd); err != nil {
 		return commandError("failed to resolve discussion", err)
 	}
 
@@ -374,7 +374,7 @@ func (p *GitLabGraphQLProvider) UnresolveDiscussion(mrIID int, discussionID stri
 	cmd := p.buildGlabCommand("api", fmt.Sprintf("projects/%s/merge_requests/%d/discussions/%s", urlEncodedRepo, mrIID, discussionID),
 		"-X", "PUT", "-f", "resolved=false")
 
-	if _, err := cmd.Output(); err != nil {
+	if _, err := runCLI(cmd); err != nil {
 		return commandError("failed to unresolve discussion", err)
 	}
 
@@ -391,7 +391,7 @@ func (p *GitLabGraphQLProvider) ToggleDraftStatus(mrID string) error {
 
 	// First, get the MR to check current draft status
 	cmd := p.buildGlabCommand("api", fmt.Sprintf("projects/%s/merge_requests/%s", urlEncodedRepo, iid))
-	output, err := cmd.Output()
+	output, err := runCLI(cmd)
 	if err != nil {
 		return commandError("failed to get MR status", err)
 	}
@@ -409,7 +409,7 @@ func (p *GitLabGraphQLProvider) ToggleDraftStatus(mrID string) error {
 	cmd = p.buildGlabCommand("api", fmt.Sprintf("projects/%s/merge_requests/%s", urlEncodedRepo, iid),
 		"-X", "PUT", "-f", "title="+newTitle)
 
-	if _, err := cmd.Output(); err != nil {
+	if _, err := runCLI(cmd); err != nil {
 		return commandError("failed to toggle draft status", err)
 	}
 
@@ -423,22 +423,7 @@ func (p *GitLabGraphQLProvider) buildGlabCommand(args ...string) *exec.Cmd {
 }
 
 func (p *GitLabGraphQLProvider) buildGlabCommandContext(ctx context.Context, args ...string) *exec.Cmd {
-	cmd := exec.CommandContext(ctx, "glab", args...)
-
-	// No host means "use glab's default/authenticated host"
-	if p.host == "" {
-		return cmd
-	}
-
-	// Set hostname for API commands
-	if len(args) > 0 && args[0] == "api" {
-		cmd.Args = append(cmd.Args[:2], append([]string{"--hostname", p.host}, cmd.Args[2:]...)...)
-	} else {
-		// For non-api commands, set via environment
-		cmd.Env = append(cmd.Environ(), "GITLAB_HOST="+p.host)
-	}
-
-	return cmd
+	return cliCommand(ctx, "glab", p.host, args...)
 }
 
 // graphQLArgs builds the glab arguments for a GraphQL request. Strings are passed with
@@ -472,7 +457,7 @@ func (p *GitLabGraphQLProvider) executeGraphQL(query string, variables map[strin
 	cmd := p.buildGlabCommandContext(ctx, graphQLArgs(query, variables)...)
 
 	// Only stdout is JSON; glab may print notices (e.g. update hints) on stderr
-	output, err := cmd.Output()
+	output, err := runCLI(cmd)
 	if ctx.Err() == context.DeadlineExceeded {
 		return nil, fmt.Errorf("graphql query timed out after %v", graphQLTimeout)
 	}
@@ -600,25 +585,15 @@ func (p *GitLabGraphQLProvider) convertGraphQLMR(gqlMR graphql.MergeRequest) Mer
 			mr.HasUnresolvedDiscussions = true
 		}
 
-		// Check if user commented but is not the last commenter on unresolved threads
-		if discussion.Resolvable && !discussion.Resolved && len(discussion.Notes.Nodes) > 0 {
-			userCommented := false
-			var lastCommenter string
-
+		// Unresolved thread where the user took part but someone else had the last word
+		if discussion.Resolvable && !discussion.Resolved {
+			var authors []string
 			for _, note := range discussion.Notes.Nodes {
-				// Skip system notes
-				if note.System {
-					continue
+				if !note.System {
+					authors = append(authors, note.Author.Username)
 				}
-
-				if note.Author.Username == p.username {
-					userCommented = true
-				}
-				lastCommenter = note.Author.Username
 			}
-
-			// If user commented but is not the last commenter, mark as needing attention
-			if userCommented && lastCommenter != "" && lastCommenter != p.username {
+			if awaitsReply(authors, p.username) {
 				mr.HasUnresolvedReplies = true
 			}
 		}

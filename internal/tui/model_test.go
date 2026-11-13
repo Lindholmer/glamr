@@ -74,12 +74,28 @@ func testMR(iid int, title string) provider.MergeRequest {
 	}
 }
 
-// loadedModel returns a model that has finished its initial load with the given MRs.
+// gitlabTabs is the fetch result for the three GitLab tabs.
+func gitlabTabs(authored, assigned, reviewing []provider.MergeRequest) tabsFetchedMsg {
+	msg := tabsFetchedMsg{count: tabsPerForge}
+	msg.results[0].mrs, msg.results[1].mrs, msg.results[2].mrs = authored, assigned, reviewing
+	return msg
+}
+
+// failedTabs is a fetch result where every one of count tabs failed with err.
+func failedTabs(count int, err error) tabsFetchedMsg {
+	msg := tabsFetchedMsg{count: count}
+	for i := 0; i < count; i++ {
+		msg.results[i].err = err
+	}
+	return msg
+}
+
+// loadedModel returns a GitLab-only model that has finished its initial load with the given MRs.
 func loadedModel(t *testing.T, p *fakeProvider, authored, assigned, reviewing []provider.MergeRequest) Model {
 	t.Helper()
-	m := NewModel(p)
+	m := NewModel(p, nil)
 	m, _ = send(t, m, tea.WindowSizeMsg{Width: 120, Height: 40})
-	m, _ = send(t, m, allScopesMRsMsg{authored: authored, assigned: assigned, reviewing: reviewing})
+	m, _ = send(t, m, gitlabTabs(authored, assigned, reviewing))
 	return m
 }
 
@@ -97,12 +113,16 @@ func TestInitialLoadPopulatesScopes(t *testing.T) {
 	}
 
 	m, _ = press(t, m, "2")
-	if m.scope != provider.ScopeAssigned || len(m.mrs) != 2 {
-		t.Errorf("tab 2: scope=%v, %d MRs", m.scope, len(m.mrs))
+	if m.activeTab != 1 || len(m.mrs) != 2 {
+		t.Errorf("tab 2: activeTab=%d, %d MRs", m.activeTab, len(m.mrs))
 	}
 	m, _ = press(t, m, "3")
-	if m.scope != provider.ScopeReviewing || len(m.mrs) != 0 {
-		t.Errorf("tab 3: scope=%v, %d MRs", m.scope, len(m.mrs))
+	if m.activeTab != 2 || len(m.mrs) != 0 {
+		t.Errorf("tab 3: activeTab=%d, %d MRs", m.activeTab, len(m.mrs))
+	}
+	m, _ = press(t, m, "4") // no GitHub tabs without --github
+	if m.activeTab != 2 {
+		t.Errorf("key 4 without GitHub should do nothing, activeTab=%d", m.activeTab)
 	}
 	if !strings.Contains(m.View(), "No merge requests found") {
 		t.Error("empty tab should say no merge requests found")
@@ -110,8 +130,8 @@ func TestInitialLoadPopulatesScopes(t *testing.T) {
 }
 
 func TestInitialLoadErrorShownAndDismissable(t *testing.T) {
-	m := NewModel(&fakeProvider{})
-	m, _ = send(t, m, allScopesMRsMsg{err: errors.New("401 Unauthorized")})
+	m := NewModel(&fakeProvider{}, nil)
+	m, _ = send(t, m, failedTabs(tabsPerForge, errors.New("401 Unauthorized")))
 
 	if !strings.Contains(m.View(), "401 Unauthorized") {
 		t.Fatal("initial load error should be shown")
@@ -124,7 +144,7 @@ func TestInitialLoadErrorShownAndDismissable(t *testing.T) {
 }
 
 func TestQuitFromErrorScreen(t *testing.T) {
-	m := NewModel(&fakeProvider{})
+	m := NewModel(&fakeProvider{}, nil)
 	m.err = errors.New("boom")
 	if _, cmd := press(t, m, "q"); !isQuit(cmd) {
 		t.Error("q should quit from the error screen")
@@ -133,7 +153,7 @@ func TestQuitFromErrorScreen(t *testing.T) {
 
 func TestBackgroundRefreshErrorKeepsData(t *testing.T) {
 	m := loadedModel(t, &fakeProvider{}, []provider.MergeRequest{testMR(1, "mine")}, nil, nil)
-	m, _ = send(t, m, allScopesMRsMsg{err: errors.New("timeout\nfull glab output")})
+	m, _ = send(t, m, failedTabs(tabsPerForge, errors.New("timeout\nfull glab output")))
 
 	if m.err != nil {
 		t.Error("a failed background refresh must not replace the list with an error screen")
@@ -141,7 +161,7 @@ func TestBackgroundRefreshErrorKeepsData(t *testing.T) {
 	if len(m.mrs) != 1 {
 		t.Error("existing data should be kept")
 	}
-	if status := m.renderStatus(); !strings.Contains(status, "Refresh failed: timeout") || strings.Contains(status, "full glab output") {
+	if status := m.renderStatus(); !strings.Contains(status, "Refresh failed: GitLab Authored: timeout") || strings.Contains(status, "full glab output") {
 		t.Errorf("status should show the first error line only, got %q", status)
 	}
 }
@@ -174,28 +194,29 @@ func TestTickRefreshesOnlyAfterInterval(t *testing.T) {
 	}
 
 	// A failing refresh counts as an attempt: no retry on the next tick
-	m, _ = send(t, m, allScopesMRsMsg{err: errors.New("fail")})
+	m, _ = send(t, m, failedTabs(tabsPerForge, errors.New("fail")))
 	m, _ = send(t, m, tickMsg(time.Now()))
 	if m.refreshing {
 		t.Error("a failed refresh should not be retried every tick")
 	}
 }
 
-func TestFetchAllScopesMergesProviders(t *testing.T) {
-	a := &fakeProvider{mrs: map[provider.Scope][]provider.MergeRequest{provider.ScopeAuthored: {testMR(1, "a")}}}
-	b := &fakeProvider{mrs: map[provider.Scope][]provider.MergeRequest{
-		provider.ScopeAuthored:  {testMR(2, "b")},
-		provider.ScopeReviewing: {testMR(3, "review")},
+func TestFetchTabsQueriesEachForge(t *testing.T) {
+	gitlab := &fakeProvider{mrs: map[provider.Scope][]provider.MergeRequest{provider.ScopeAuthored: {testMR(1, "gl")}}}
+	github := &fakeProvider{name: "GitHub", mrs: map[provider.Scope][]provider.MergeRequest{
+		provider.ScopeReviewing: {ghMR(7, "gh review")},
 	}}
 
-	msg := fetchAllScopesMRs([]provider.Provider{a, b})().(allScopesMRsMsg)
-	if msg.err != nil || len(msg.authored) != 2 || len(msg.reviewing) != 1 || len(msg.assigned) != 0 {
-		t.Errorf("unexpected result: %+v", msg)
+	msg := fetchTabs(NewModel(gitlab, github))().(tabsFetchedMsg)
+	if msg.count != 6 {
+		t.Fatalf("count = %d, want 6 tabs", msg.count)
+	}
+	if len(msg.results[0].mrs) != 1 || len(msg.results[5].mrs) != 1 || len(msg.results[3].mrs) != 0 {
+		t.Errorf("results = %+v", msg.results)
 	}
 
-	failing := &fakeProvider{listErr: errors.New("down")}
-	if msg := fetchAllScopesMRs([]provider.Provider{a, failing})().(allScopesMRsMsg); msg.err == nil {
-		t.Error("an error from any provider should be reported")
+	if msg := fetchTabs(NewModel(gitlab, nil))().(tabsFetchedMsg); msg.count != 3 {
+		t.Errorf("GitLab only: count = %d, want 3", msg.count)
 	}
 }
 
@@ -205,7 +226,7 @@ func TestRefreshClampsCursor(t *testing.T) {
 	if m.cursor != 2 {
 		t.Fatalf("cursor = %d, want 2", m.cursor)
 	}
-	m, _ = send(t, m, allScopesMRsMsg{authored: []provider.MergeRequest{testMR(1, "a")}})
+	m, _ = send(t, m, gitlabTabs([]provider.MergeRequest{testMR(1, "a")}, nil, nil))
 	if m.cursor != 0 {
 		t.Errorf("cursor = %d after list shrank, want 0", m.cursor)
 	}
@@ -339,7 +360,7 @@ func TestDetailActionsTargetOpenMREvenAfterRefreshReorders(t *testing.T) {
 	m = openDetail(t, m) // detail for A (cursor 0)
 
 	// Background refresh puts B first
-	m, _ = send(t, m, allScopesMRsMsg{authored: []provider.MergeRequest{b, a}})
+	m, _ = send(t, m, gitlabTabs([]provider.MergeRequest{b, a}, nil, nil))
 
 	_, cmd := press(t, m, "a")
 	cmd()
@@ -353,7 +374,7 @@ func TestDetailViewIgnoresListKeys(t *testing.T) {
 	m = openDetail(t, m)
 
 	m, _ = press(t, m, "2")
-	if m.scope != provider.ScopeAuthored {
+	if m.activeTab != 0 {
 		t.Error("tab keys must not switch scope while the detail view is open")
 	}
 

@@ -19,11 +19,6 @@ func TestGraphQLBuildGlabCommand(t *testing.T) {
 		t.Errorf("args = %q, want %q", cmd.Args, want)
 	}
 
-	cmd = withHost.buildGlabCommand("mr", "list")
-	if !containsString(cmd.Env, "GITLAB_HOST=gitlab.example.com") {
-		t.Errorf("non-api command should set GITLAB_HOST, env = %v", cmd.Env)
-	}
-
 	// Without --host, glab's default host must be used rather than passing an empty --hostname
 	noHost := &GitLabGraphQLProvider{}
 	cmd = noHost.buildGlabCommand("api", "projects/1")
@@ -496,5 +491,17 @@ func TestRepoSet(t *testing.T) {
 	want := map[string]bool{"team/app": true, "team/lib": true}
 	if !reflect.DeepEqual(got, want) {
 		t.Errorf("repoSet = %v, want %v", got, want)
+	}
+}
+
+func TestGitLabErrorShowsAPIReason(t *testing.T) {
+	installFakeGlab(t, `echo '{"message":"401 Unauthorized"}'
+echo 'glab: 401 Unauthorized (HTTP 401)' >&2
+exit 1`)
+
+	err := (&GitLabGraphQLProvider{}).RetryJob("1", "team/app")
+	want := "failed to retry job: 401 Unauthorized\nglab: 401 Unauthorized (HTTP 401)"
+	if err == nil || err.Error() != want {
+		t.Errorf("error = %q, want %q", err, want)
 	}
 }

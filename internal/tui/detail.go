@@ -18,6 +18,7 @@ const (
 
 // DetailView renders the split view for a selected MR
 type DetailView struct {
+	provider    provider.Provider // owner of mr; performs its actions
 	mr          provider.MergeRequest
 	jobs        []provider.PipelineJob
 	notes       []provider.MRNote
@@ -74,7 +75,7 @@ func (d DetailView) Render() string {
 		statusIcon = "❌"
 	}
 
-	titleLine := fmt.Sprintf("%s !%d %s", statusIcon, d.mr.IID, d.mr.Title)
+	titleLine := fmt.Sprintf("%s %s %s", statusIcon, d.mr.Ref(), d.mr.Title)
 
 	// Metadata line: branches and author
 	metaStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("#888888"))

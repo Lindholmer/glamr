@@ -11,6 +11,7 @@ import (
 type fakeProvider struct {
 	mu sync.Mutex
 
+	name    string // Name(); defaults to "GitLab"
 	mrs     map[provider.Scope][]provider.MergeRequest
 	listErr error
 	notes   []provider.MRNote
@@ -51,8 +52,13 @@ func (f *fakeProvider) UnapproveMR(id string) error {
 }
 
 func (f *fakeProvider) GetCurrentUser() (string, error) { return "me", nil }
-func (f *fakeProvider) Name() string                    { return "fake" }
-func (f *fakeProvider) ListRepos() ([]string, error)    { return nil, nil }
+func (f *fakeProvider) Name() string {
+	if f.name == "" {
+		return "GitLab"
+	}
+	return f.name
+}
+func (f *fakeProvider) ListRepos() ([]string, error) { return nil, nil }
 
 func (f *fakeProvider) GetPipelineJobs(pipelineID string, repo string) ([]provider.PipelineJob, error) {
 	return nil, nil
