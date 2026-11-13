@@ -280,3 +280,32 @@ func parseDiscussions(data []byte) ([]MRNote, error) {
 	}
 	return notes, nil
 }
+
+// mentionWindowPages caps how many pages of mention candidates are read per refresh.
+const mentionWindowPages = 10
+
+// mentionsUser reports whether text @mentions login (case-insensitive). The @ must start a
+// word (so "me@example.com" doesn't count) and the name must end there ("@bob" isn't "@bobby").
+func mentionsUser(text, login string) bool {
+	if login == "" {
+		return false
+	}
+	lower, needle := strings.ToLower(text), "@"+strings.ToLower(login)
+	isNameChar := func(b byte) bool {
+		return b == '-' || b == '_' || b == '.' || (b >= '0' && b <= '9') || (b >= 'a' && b <= 'z')
+	}
+	for i := 0; ; {
+		j := strings.Index(lower[i:], needle)
+		if j < 0 {
+			return false
+		}
+		start, end := i+j, i+j+len(needle)
+		before := start == 0 || !(isNameChar(lower[start-1]) || lower[start-1] == '/')
+		// A trailing "." ends a sentence, not the name
+		after := end == len(lower) || !isNameChar(lower[end]) || (lower[end] == '.' && (end+1 == len(lower) || !isNameChar(lower[end+1])))
+		if before && after {
+			return true
+		}
+		i = start + 1
+	}
+}

@@ -820,3 +820,135 @@ func (p *GitHubProvider) CancelJob(jobID string, repo string) error {
 	_, err = p.api("failed to cancel workflow run", fmt.Sprintf("repos/%s/actions/runs/%d/cancel", repo, job.RunID), "-X", "POST")
 	return err
 }
+
+var _ Provider = (*GitHubProvider)(nil)
+
+const ghMentionsQuery = `
+query($q: String!, $first: Int!, $after: String) {
+  search(type: ISSUE, query: $q, first: $first, after: $after) {
+    pageInfo { hasNextPage endCursor }
+    nodes { ... on PullRequest {
+      id number title url createdAt body
+      author { login }
+      repository { nameWithOwner }
+      comments(last: 100) { nodes { id url author { login } body createdAt } }
+      reviews(last: 50) { nodes { id url author { login } body createdAt } }
+      reviewThreads(last: 50) { nodes { comments(first: 50) { nodes { id url author { login } body createdAt } } } }
+    } }
+  }
+}
+`
+
+type ghMentionComment struct {
+	ID        string    `json:"id"`
+	URL       string    `json:"url"`
+	Author    ghActor   `json:"author"`
+	Body      string    `json:"body"`
+	CreatedAt time.Time `json:"createdAt"`
+}
+
+type ghMentionPR struct {
+	ID         string    `json:"id"`
+	Number     int       `json:"number"`
+	Title      string    `json:"title"`
+	URL        string    `json:"url"`
+	CreatedAt  time.Time `json:"createdAt"`
+	Body       string    `json:"body"`
+	Author     ghActor   `json:"author"`
+	Repository struct {
+		NameWithOwner string `json:"nameWithOwner"`
+	} `json:"repository"`
+	Comments struct {
+		Nodes []ghMentionComment `json:"nodes"`
+	} `json:"comments"`
+	Reviews struct {
+		Nodes []ghMentionComment `json:"nodes"`
+	} `json:"reviews"`
+	ReviewThreads struct {
+		Nodes []struct {
+			Comments struct {
+				Nodes []ghMentionComment `json:"nodes"`
+			} `json:"comments"`
+		} `json:"nodes"`
+	} `json:"reviewThreads"`
+}
+
+// ListMentions finds PRs that mention the user and were updated since the given time, then
+// picks out each description, comment or review written since then that @mentions the user.
+// GitHub has no per-mention feed (notifications are per PR), hence the search + scan.
+func (p *GitHubProvider) ListMentions(since time.Time) ([]Mention, error) {
+	query := "is:pr mentions:@me archived:false updated:>=" + since.UTC().Format("2006-01-02")
+	for _, r := range p.repos {
+		query += " repo:" + r
+	}
+
+	var mentions []Mention
+	cursor := ""
+	for page := 0; page < mentionWindowPages; page++ {
+		variables := map[string]interface{}{"q": query, "first": ghPageSize}
+		if cursor != "" {
+			variables["after"] = cursor
+		}
+		var data struct {
+			Search struct {
+				PageInfo struct {
+					HasNextPage bool   `json:"hasNextPage"`
+					EndCursor   string `json:"endCursor"`
+				} `json:"pageInfo"`
+				Nodes []ghMentionPR `json:"nodes"`
+			} `json:"search"`
+		}
+		if err := p.graphql(ghMentionsQuery, variables, &data); err != nil {
+			return nil, err
+		}
+		for _, pr := range data.Search.Nodes {
+			if pr.Number != 0 {
+				mentions = append(mentions, p.mentionsInPR(pr, since)...)
+			}
+		}
+		if !data.Search.PageInfo.HasNextPage || data.Search.PageInfo.EndCursor == "" {
+			break
+		}
+		cursor = data.Search.PageInfo.EndCursor
+	}
+
+	sort.SliceStable(mentions, func(i, j int) bool { return mentions[i].CreatedAt.After(mentions[j].CreatedAt) })
+	return mentions, nil
+}
+
+func (p *GitHubProvider) mentionsInPR(pr ghMentionPR, since time.Time) []Mention {
+	repo := pr.Repository.NameWithOwner
+	mrID := fmt.Sprintf("%s#%d", repo, pr.Number)
+
+	var mentions []Mention
+	consider := func(id, url, author, body string, created time.Time) {
+		// Mentioning yourself isn't a mention (GitLab doesn't create to-dos for it either)
+		if created.Before(since) || author == p.username || !mentionsUser(body, p.username) {
+			return
+		}
+		mentions = append(mentions, Mention{
+			ID:        "github:" + id,
+			Author:    author,
+			Body:      body,
+			CreatedAt: created,
+			URL:       url,
+			MRID:      mrID,
+			MRTitle:   pr.Title,
+			RepoName:  repo,
+		})
+	}
+
+	consider(pr.ID+":description", pr.URL, pr.Author.Login, pr.Body, pr.CreatedAt)
+	for _, c := range pr.Comments.Nodes {
+		consider(c.ID, c.URL, c.Author.Login, c.Body, c.CreatedAt)
+	}
+	for _, c := range pr.Reviews.Nodes {
+		consider(c.ID, c.URL, c.Author.Login, c.Body, c.CreatedAt)
+	}
+	for _, t := range pr.ReviewThreads.Nodes {
+		for _, c := range t.Comments.Nodes {
+			consider(c.ID, c.URL, c.Author.Login, c.Body, c.CreatedAt)
+		}
+	}
+	return mentions
+}

@@ -669,3 +669,53 @@ func convertPipelineStatus(status string) PipelineStatus {
 		return PipelineStatus(strings.ToLower(status))
 	}
 }
+
+var _ Provider = (*GitLabGraphQLProvider)(nil)
+
+// ListMentions returns the user's @mentions in MRs since the given time, from GitLab's
+// to-do items (one per mention, including ones already marked done).
+func (p *GitLabGraphQLProvider) ListMentions(since time.Time) ([]Mention, error) {
+	var mentions []Mention
+	cursor := ""
+	for page := 0; page < mentionWindowPages; page++ {
+		variables := map[string]interface{}{"first": 50}
+		if cursor != "" {
+			variables["after"] = cursor
+		}
+		response, err := p.executeGraphQL(graphql.MentionTodosQuery, variables)
+		if err != nil {
+			return nil, err
+		}
+		if response.Data.CurrentUser == nil || response.Data.CurrentUser.Todos == nil {
+			break
+		}
+		todos := response.Data.CurrentUser.Todos
+
+		reachedOlder := false
+		for _, todo := range todos.Nodes {
+			if todo.CreatedAt.Before(since) {
+				reachedOlder = true // newest first: the rest is older too
+				break
+			}
+			repo := todo.Project.FullPath
+			if len(p.repos) > 0 && !p.repos[strings.ToLower(repo)] {
+				continue
+			}
+			mentions = append(mentions, Mention{
+				ID:        "gitlab:" + todo.ID,
+				Author:    todo.Author.Username,
+				Body:      todo.Body,
+				CreatedAt: todo.CreatedAt,
+				URL:       todo.TargetURL,
+				MRID:      repo + "!" + todo.Target.IID,
+				MRTitle:   todo.Target.Title,
+				RepoName:  repo,
+			})
+		}
+		if reachedOlder || !todos.PageInfo.HasNextPage {
+			break
+		}
+		cursor = todos.PageInfo.EndCursor
+	}
+	return mentions, nil
+}

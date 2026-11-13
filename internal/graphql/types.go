@@ -25,6 +25,7 @@ type CurrentUser struct {
 	AuthoredMergeRequests        *MergeRequestConnection `json:"authoredMergeRequests,omitempty"`
 	AssignedMergeRequests        *MergeRequestConnection `json:"assignedMergeRequests,omitempty"`
 	ReviewRequestedMergeRequests *MergeRequestConnection `json:"reviewRequestedMergeRequests,omitempty"`
+	Todos                        *TodoConnection         `json:"todos,omitempty"`
 }
 
 type Project struct {
@@ -141,4 +142,22 @@ type Reviewer struct {
 
 type MergeRequestInteraction struct {
 	ReviewState string `json:"reviewState"`
+}
+
+type TodoConnection struct {
+	PageInfo PageInfo `json:"pageInfo"`
+	Nodes    []Todo   `json:"nodes"`
+}
+
+type Todo struct {
+	ID        string      `json:"id"`
+	CreatedAt time.Time   `json:"createdAt"`
+	Body      string      `json:"body"`
+	TargetURL string      `json:"targetUrl"`
+	Author    User        `json:"author"`
+	Project   ProjectInfo `json:"project"`
+	Target    struct {
+		IID   string `json:"iid"`
+		Title string `json:"title"`
+	} `json:"target"`
 }

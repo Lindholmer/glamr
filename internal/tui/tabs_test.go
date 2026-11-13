@@ -27,7 +27,7 @@ func bothForges(t *testing.T, gitlabMRs, githubMRs [tabsPerForge][]provider.Merg
 	t.Helper()
 	gitlab := &fakeProvider{}
 	github := &fakeProvider{name: "GitHub"}
-	m := NewModel(gitlab, github)
+	m := NewModel(gitlab, github, nil, 0)
 	m, _ = send(t, m, tea.WindowSizeMsg{Width: 160, Height: 40})
 
 	msg := tabsFetchedMsg{count: maxTabs}
@@ -41,13 +41,13 @@ func bothForges(t *testing.T, gitlabMRs, githubMRs [tabsPerForge][]provider.Merg
 
 func TestGitHubTabsShownOnlyWithGitHub(t *testing.T) {
 	gitlabOnly := loadedModel(t, &fakeProvider{}, nil, nil, nil)
-	if tabs := gitlabOnly.renderTabs(); strings.Contains(tabs, "GitHub") || strings.Contains(tabs, "4.") {
+	if tabs := gitlabOnly.renderTabs(); strings.Contains(tabs, "GitHub") || strings.Contains(tabs, "4. Authored") || !strings.Contains(tabs, "4. Mentions") {
 		t.Errorf("GitLab-only tabs should not mention GitHub: %q", tabs)
 	}
 
 	m, _, _ := bothForges(t, [3][]provider.MergeRequest{}, [3][]provider.MergeRequest{})
 	tabs := m.renderTabs()
-	for _, want := range []string{"GitLab:", "GitHub:", "1. Authored", "3. Reviewing", "4. Authored", "6. Reviewing"} {
+	for _, want := range []string{"GitLab:", "GitHub:", "1. Authored", "3. Reviewing", "4. Authored", "6. Reviewing", "7. Mentions"} {
 		if !strings.Contains(tabs, want) {
 			t.Errorf("tabs missing %q: %q", want, tabs)
 		}
@@ -134,7 +134,7 @@ func TestOneForgeFailingKeepsTheOther(t *testing.T) {
 }
 
 func TestInitialLoadPartialFailureShowsList(t *testing.T) {
-	m := NewModel(&fakeProvider{}, &fakeProvider{name: "GitHub"})
+	m := NewModel(&fakeProvider{}, &fakeProvider{name: "GitHub"}, nil, 0)
 	msg := tabsFetchedMsg{count: maxTabs}
 	msg.results[0].mrs = []provider.MergeRequest{testMR(1, "gl")}
 	for i := tabsPerForge; i < maxTabs; i++ {

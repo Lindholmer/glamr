@@ -152,6 +152,30 @@ type Provider interface {
 
 	// ToggleDraftStatus toggles the draft status of an MR
 	ToggleDraftStatus(mrID string) error
+
+	// ListMentions returns comments and descriptions that @mention the user in MRs/PRs
+	// created since the given time, newest first
+	ListMentions(since time.Time) ([]Mention, error)
+}
+
+// Mention is one @mention of the user in an MR/PR comment or description.
+type Mention struct {
+	ID        string // Stable and unique per mention, prefixed by forge (e.g. "gitlab:...", "github:...")
+	Author    string
+	Body      string
+	CreatedAt time.Time
+	URL       string // Link to the comment itself
+	MRID      string // ID of the MR/PR, as in MergeRequest.ID
+	MRTitle   string
+	RepoName  string
+}
+
+// Ref is the MR/PR reference ("!42" or "#42"), as MergeRequest.Ref.
+func (m Mention) Ref() string {
+	if i := strings.LastIndexAny(m.MRID, "!#"); i >= 0 {
+		return m.MRID[i:]
+	}
+	return m.MRID
 }
 
 // PipelineJob represents a CI/CD job

@@ -295,6 +295,12 @@ func (m Model) handleDetailKey(key string) (tea.Model, tea.Cmd) {
 
 // handleListKey handles the main MR list.
 func (m Model) handleListKey(key string) (tea.Model, tea.Cmd) {
+	if m.onMentionsTab() {
+		if next, cmd, handled := m.handleMentionKey(key); handled {
+			return next, cmd
+		}
+	}
+
 	mr, hasMR := m.selectedMR()
 	p := m.selectedProvider()
 
@@ -320,14 +326,14 @@ func (m Model) handleListKey(key string) (tea.Model, tea.Cmd) {
 		}
 
 	case "down", "j":
-		if m.cursor < len(m.mrs)-1 {
+		if m.cursor < m.listLen()-1 {
 			m.cursor++
 			if visible := m.visibleMRCount(); m.cursor >= m.scroll+visible {
 				m.scroll = m.cursor - visible + 1
 			}
 		}
 
-	case "1", "2", "3", "4", "5", "6":
+	case "1", "2", "3", "4", "5", "6", "7":
 		m.switchTab(int(key[0] - '1'))
 
 	case "o":

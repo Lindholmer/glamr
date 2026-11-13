@@ -4,9 +4,11 @@ import (
 	"flag"
 	"fmt"
 	"os"
+	"time"
 
 	tea "github.com/charmbracelet/bubbletea"
 	"glamr/internal/provider"
+	"glamr/internal/readlist"
 	"glamr/internal/tui"
 )
 
@@ -20,7 +22,13 @@ func main() {
 	githubHost := flag.String("github-host", "", "GitHub Enterprise host. Defaults to gh's configured host (github.com).")
 	var githubRepos stringList
 	flag.Var(&githubRepos, "github-repo", "GitHub repository to include (owner/name, can be repeated). If omitted, all repos.")
+	mentionDays := flag.Int("mention-days", 7, "How many days back the Mentions tab looks")
 	flag.Parse()
+
+	if *mentionDays < 1 {
+		fmt.Fprintln(os.Stderr, "Error: --mention-days must be at least 1")
+		os.Exit(1)
+	}
 
 	// --repo filters the user's MRs client-side, so a single provider serves any number of repos
 	gitlab, err := provider.NewGitLabGraphQLProvider(*host, repos...)
@@ -50,8 +58,20 @@ func main() {
 		return
 	}
 
+	// Mentions marked read are kept in a small state file
+	readPath, err := readlist.DefaultPath()
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "Error: %v\n", err)
+		os.Exit(1)
+	}
+	reads, err := readlist.Load(readPath)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "Error: %v (delete the file to start over)\n", err)
+		os.Exit(1)
+	}
+
 	// Run TUI
-	m := tui.NewModel(gitlab, github)
+	m := tui.NewModel(gitlab, github, reads, time.Duration(*mentionDays)*24*time.Hour)
 	if _, err := tea.NewProgram(m, tea.WithAltScreen()).Run(); err != nil {
 		fmt.Fprintf(os.Stderr, "Error: %v\n", err)
 		os.Exit(1)
