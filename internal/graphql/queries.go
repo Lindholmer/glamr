@@ -112,3 +112,37 @@ query getMergeRequest($projectPath: ID!, $iid: String!) {
   }
 }
 `
+
+// MentionTodosQuery lists the user's to-do items for @mentions in MRs (newest first),
+// whether or not the to-do was marked done.
+const MentionTodosQuery = `
+query getMentionTodos($first: Int = 50, $after: String) {
+  currentUser {
+    username
+    todos(action: [mentioned, directly_addressed], type: [MERGEREQUEST], state: [pending, done], first: $first, after: $after) {
+      pageInfo {
+        hasNextPage
+        endCursor
+      }
+      nodes {
+        id
+        createdAt
+        body
+        targetUrl
+        author {
+          username
+        }
+        project {
+          fullPath
+        }
+        target {
+          ... on MergeRequest {
+            iid
+            title
+          }
+        }
+      }
+    }
+  }
+}
+`

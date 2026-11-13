@@ -3,6 +3,7 @@ package tui
 import (
 	"fmt"
 	"sync"
+	"time"
 
 	"glamr/internal/provider"
 )
@@ -11,11 +12,12 @@ import (
 type fakeProvider struct {
 	mu sync.Mutex
 
-	name    string // Name(); defaults to "GitLab"
-	mrs     map[provider.Scope][]provider.MergeRequest
-	listErr error
-	notes   []provider.MRNote
-	changes *provider.MRChanges
+	name     string // Name(); defaults to "GitLab"
+	mrs      map[provider.Scope][]provider.MergeRequest
+	listErr  error
+	notes    []provider.MRNote
+	changes  *provider.MRChanges
+	mentions []provider.Mention
 
 	calls []string // e.g. "approve team/app!1"
 }
@@ -109,6 +111,19 @@ func (f *fakeProvider) ResolveDiscussion(mrIID int, discussionID string, repo st
 func (f *fakeProvider) UnresolveDiscussion(mrIID int, discussionID string, repo string) error {
 	f.record("unresolve %s!%d %s", repo, mrIID, discussionID)
 	return nil
+}
+
+func (f *fakeProvider) ListMentions(since time.Time) ([]provider.Mention, error) {
+	if f.listErr != nil {
+		return nil, f.listErr
+	}
+	var recent []provider.Mention
+	for _, m := range f.mentions {
+		if !m.CreatedAt.Before(since) {
+			recent = append(recent, m)
+		}
+	}
+	return recent, nil
 }
 
 func (f *fakeProvider) ToggleDraftStatus(mrID string) error {

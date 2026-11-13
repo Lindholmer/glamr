@@ -93,7 +93,7 @@ func failedTabs(count int, err error) tabsFetchedMsg {
 // loadedModel returns a GitLab-only model that has finished its initial load with the given MRs.
 func loadedModel(t *testing.T, p *fakeProvider, authored, assigned, reviewing []provider.MergeRequest) Model {
 	t.Helper()
-	m := NewModel(p, nil)
+	m := NewModel(p, nil, nil, 0)
 	m, _ = send(t, m, tea.WindowSizeMsg{Width: 120, Height: 40})
 	m, _ = send(t, m, gitlabTabs(authored, assigned, reviewing))
 	return m
@@ -120,17 +120,21 @@ func TestInitialLoadPopulatesScopes(t *testing.T) {
 	if m.activeTab != 2 || len(m.mrs) != 0 {
 		t.Errorf("tab 3: activeTab=%d, %d MRs", m.activeTab, len(m.mrs))
 	}
-	m, _ = press(t, m, "4") // no GitHub tabs without --github
-	if m.activeTab != 2 {
-		t.Errorf("key 4 without GitHub should do nothing, activeTab=%d", m.activeTab)
-	}
 	if !strings.Contains(m.View(), "No merge requests found") {
 		t.Error("empty tab should say no merge requests found")
+	}
+	m, _ = press(t, m, "4") // without --github, 4 is the Mentions tab
+	if !m.onMentionsTab() {
+		t.Errorf("key 4 without GitHub should open Mentions, activeTab=%d", m.activeTab)
+	}
+	m, _ = press(t, m, "5")
+	if !m.onMentionsTab() {
+		t.Error("key 5 without GitHub should do nothing")
 	}
 }
 
 func TestInitialLoadErrorShownAndDismissable(t *testing.T) {
-	m := NewModel(&fakeProvider{}, nil)
+	m := NewModel(&fakeProvider{}, nil, nil, 0)
 	m, _ = send(t, m, failedTabs(tabsPerForge, errors.New("401 Unauthorized")))
 
 	if !strings.Contains(m.View(), "401 Unauthorized") {
@@ -144,7 +148,7 @@ func TestInitialLoadErrorShownAndDismissable(t *testing.T) {
 }
 
 func TestQuitFromErrorScreen(t *testing.T) {
-	m := NewModel(&fakeProvider{}, nil)
+	m := NewModel(&fakeProvider{}, nil, nil, 0)
 	m.err = errors.New("boom")
 	if _, cmd := press(t, m, "q"); !isQuit(cmd) {
 		t.Error("q should quit from the error screen")
@@ -207,7 +211,7 @@ func TestFetchTabsQueriesEachForge(t *testing.T) {
 		provider.ScopeReviewing: {ghMR(7, "gh review")},
 	}}
 
-	msg := fetchTabs(NewModel(gitlab, github))().(tabsFetchedMsg)
+	msg := fetchTabs(NewModel(gitlab, github, nil, 0))().(tabsFetchedMsg)
 	if msg.count != 6 {
 		t.Fatalf("count = %d, want 6 tabs", msg.count)
 	}
@@ -215,7 +219,7 @@ func TestFetchTabsQueriesEachForge(t *testing.T) {
 		t.Errorf("results = %+v", msg.results)
 	}
 
-	if msg := fetchTabs(NewModel(gitlab, nil))().(tabsFetchedMsg); msg.count != 3 {
+	if msg := fetchTabs(NewModel(gitlab, nil, nil, 0))().(tabsFetchedMsg); msg.count != 3 {
 		t.Errorf("GitLab only: count = %d, want 3", msg.count)
 	}
 }

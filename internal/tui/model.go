@@ -15,6 +15,7 @@ import (
 	"github.com/charmbracelet/lipgloss"
 	"glamr/internal/cache"
 	"glamr/internal/provider"
+	"glamr/internal/readlist"
 )
 
 type Model struct {
@@ -22,7 +23,11 @@ type Model struct {
 	github            provider.Provider                // nil unless --github
 	tabMRs            [maxTabs][]provider.MergeRequest // Cached MRs per tab (see tabs.go)
 	activeTab         int
-	mrs               []provider.MergeRequest // MRs of the active tab
+	mrs               []provider.MergeRequest // MRs of the active tab (nil on the Mentions tab)
+	forgeMentions     [2][]provider.Mention   // Fetched mentions per forge (see forgeProviders)
+	mentions          []provider.Mention      // Unread mentions, newest first
+	readList          *readlist.List          // Mentions marked read (persisted)
+	mentionWindow     time.Duration
 	cursor            int
 	scroll            int // Scroll offset for MR list
 	loading           bool
@@ -105,10 +110,20 @@ type draftMsg struct {
 }
 
 // NewModel creates the TUI model. github may be nil, in which case only GitLab tabs are shown.
-func NewModel(gitlab, github provider.Provider) Model {
+// reads persists mentions marked read (nil keeps them in memory only); mentionWindow is how far
+// back the Mentions tab looks (0 means DefaultMentionWindow).
+func NewModel(gitlab, github provider.Provider, reads *readlist.List, mentionWindow time.Duration) Model {
+	if reads == nil {
+		reads = readlist.New()
+	}
+	if mentionWindow <= 0 {
+		mentionWindow = DefaultMentionWindow
+	}
 	return Model{
 		gitlab:           gitlab,
 		github:           github,
+		readList:         reads,
+		mentionWindow:    mentionWindow,
 		cache:            cache.NewCache(5 * time.Minute), // 5 minute cache
 		refreshInterval:  5 * time.Minute,                 // Check every 5 minutes
 		loading:          true,
@@ -321,8 +336,13 @@ func (m Model) View() string {
 	}
 
 	// Header
-	p := m.tabProvider(m.activeTab)
-	header := headerStyle.Render(fmt.Sprintf("glamr - %s %s %s", p.Name(), scopeName(tabScope(m.activeTab)), itemsName(p)))
+	var header string
+	if m.onMentionsTab() {
+		header = headerStyle.Render(fmt.Sprintf("glamr - Mentions (last %d days)", m.mentionDays()))
+	} else {
+		p := m.tabProvider(m.activeTab)
+		header = headerStyle.Render(fmt.Sprintf("glamr - %s %s %s", p.Name(), scopeName(tabScope(m.activeTab)), itemsName(p)))
+	}
 
 	// Tabs
 	tabs := m.renderTabs()
@@ -346,7 +366,10 @@ func (m Model) View() string {
 	list := listStyle.Render(listContent)
 
 	// Help
-	help := helpStyle.Render(fmt.Sprintf("↑/↓: navigate | enter: details | a: approve/unapprove | D: toggle draft | o: open in browser | 1-%d: switch tab | r: refresh | q: quit", m.tabCount()))
+	help := helpStyle.Render(fmt.Sprintf("↑/↓: navigate | enter: details | a: approve/unapprove | D: toggle draft | o: open in browser | 1-%d: switch tab | r: refresh | q: quit", m.mentionsTab()+1))
+	if m.onMentionsTab() {
+		help = helpStyle.Render(fmt.Sprintf("↑/↓: navigate | enter: read in full | a: mark read | o: open comment in browser | 1-%d: switch tab | r: refresh | q: quit", m.mentionsTab()+1))
+	}
 
 	return lipgloss.JoinVertical(
 		lipgloss.Left,
@@ -385,6 +408,12 @@ func (m Model) renderTabs() string {
 		label := fmt.Sprintf("%d. %s", i+1, scopeName(tabScope(i)))
 		tabs = append(tabs, m.renderTab(label, i == m.activeTab, attention))
 	}
+
+	label := fmt.Sprintf("%d. Mentions", m.mentionsTab()+1)
+	if n := len(m.mentions); n > 0 {
+		label += fmt.Sprintf(" (%d)", n)
+	}
+	tabs = append(tabs, m.renderTab(label, m.onMentionsTab(), len(m.mentions) > 0))
 	return lipgloss.JoinHorizontal(lipgloss.Top, tabs...)
 }
 
@@ -416,6 +445,9 @@ func (m Model) renderStatus() string {
 	}
 
 	status := fmt.Sprintf("Last refresh: %v ago | %d %s from %d repos", timeSince, len(m.mrs), itemsName(m.tabProvider(m.activeTab)), len(repos))
+	if m.onMentionsTab() {
+		status = fmt.Sprintf("Last refresh: %v ago | %d unread mentions | %d marked read", timeSince, len(m.mentions), m.readList.Len())
+	}
 	if m.refreshing {
 		status += " | ⟳ Refreshing..."
 	} else if m.refreshErr != nil {
@@ -427,6 +459,9 @@ func (m Model) renderStatus() string {
 }
 
 func (m Model) renderMRList() string {
+	if m.onMentionsTab() {
+		return m.renderMentionList()
+	}
 	if m.loading {
 		return emptyStyle.Render("Loading merge requests...")
 	}

@@ -11,6 +11,7 @@
 - **Tabs**: Authored, Assigned and Reviewing for GitLab (`1-3`), plus the same three for GitHub (`4-6`) with `--github`. All tabs are preloaded, so switching is instant
 - **Status at a glance**: pipeline status, approvals, conflicts and unresolved discussions
 - **Quick actions**: approve/revoke approval, toggle draft, open in browser
+- **Mentions**: one tab with every @mention of you in MRs and PRs from the last 7 days; mark them read with `a` (see [Mentions tab](#mentions-tab))
 - **Review triage**: the Reviewing tab is sorted by what needs your attention and turns red when something does (see [Reviewing tab](#reviewing-tab))
 
 ### 🔍 Code Review
@@ -90,6 +91,7 @@ glamr --host your.gitlab.host --no-tui
 | `--github` | `false` | Add GitHub tabs (4-6) using the `gh` CLI |
 | `--github-host` | gh's default host | GitHub Enterprise hostname (implies `--github`) |
 | `--github-repo` | all repos | Limit GitHub tabs to a repository (`owner/name`). Repeat for several; filtered by GitHub's search, so it costs no extra calls. Implies `--github`. |
+| `--mention-days` | `7` | How many days back the Mentions tab looks |
 | `--no-tui` | `false` | Print authored MRs (and PRs) to stdout and exit |
 
 ### Keyboard Shortcuts
@@ -103,11 +105,20 @@ glamr --host your.gitlab.host --no-tui
 | `Enter` | Open MR details |
 | `1` / `2` / `3` | GitLab Authored / Assigned / Reviewing tab |
 | `4` / `5` / `6` | GitHub Authored / Assigned / Reviewing tab (with `--github`) |
+| `4`, or `7` with `--github` | Mentions tab |
 | `a` | Approve, or revoke your approval |
 | `D` | Toggle draft status |
 | `o` | Open MR in browser |
 | `r` | Refresh now |
 | `q` | Quit |
+
+#### Mentions Tab
+| Key | Action |
+|-----|--------|
+| `↑/↓` or `k/j` | Navigate mentions |
+| `Enter` | Read the full comment |
+| `a` | Mark read (hides it) |
+| `o` | Open the comment in the browser |
 
 #### Detail View
 | Key | Action |
@@ -165,6 +176,24 @@ MRs where you are a reviewer are sorted by priority:
 
 The tab label turns red if any non-draft MR is unreviewed or has new replies. With `--github`, each forge's Reviewing tab is flagged separately.
 
+### Mentions tab
+
+The last tab lists every comment or description that @mentions you in an MR or PR from the last 7 days (`--mention-days` to change), newest first, from both forges. The tab turns red and shows a count while there are unread mentions.
+
+- **GitLab**: from your to-do items for mentions (`mentioned` and `directly_addressed`), including ones already marked done in GitLab.
+- **GitHub**: PRs matching `mentions:@me` updated in the window, scanned for comments, reviews, review comments and descriptions containing `@you`. Your own comments don't count.
+- `--repo` / `--github-repo` filter mentions too.
+
+`a` marks a mention read. Read mentions are stored in `~/.local/state/glamr/read_mentions.json` (or `$XDG_STATE_HOME/glamr/`), as the mention ID plus an `expires_at` time: the mention's time plus the window. Each refresh removes expired entries, since those mentions are out of the window anyway, so the file stays small. To see everything again, delete the file.
+
+```json
+{
+  "read": [
+    { "id": "gitlab:gid://gitlab/Todo/1170958", "expires_at": "2026-11-12T14:07:43Z" }
+  ]
+}
+```
+
 ### GitHub pull requests
 
 With `--github`, tabs 4-6 list your open PRs (`author:@me`, `assignee:@me`, and PRs you're requested to review or have reviewed). They work like the GitLab tabs, with these differences:
@@ -199,6 +228,7 @@ The pipeline status is derived from its jobs: any failed job shows the pipeline 
   - `model.go` - state, message handling, commands and the list/diff/thread views
   - `keys.go` - key handling, one handler per view
   - `tabs.go` - the tab layout (3 GitLab tabs, 3 more for GitHub), parallel tab refresh
+  - `mentions.go` - the Mentions tab
   - `detail.go`, `files.go` - detail and files views
 - **Provider layer** (`internal/provider/`) - the `Provider` interface and its implementations
   - `gitlab_graphql.go` - GitLab: MR lists come from GraphQL; actions (approve, notes, jobs, diffs) use the REST API.
@@ -207,12 +237,13 @@ The pipeline status is derived from its jobs: any failed job shows the pipeline 
   - `common.go` - helpers (ID parsing, pagination, discussions, draft titles, status aggregation, CLI errors)
 - **GraphQL layer** (`internal/graphql/`) - query templates and response types
 - **Cache layer** (`internal/cache/`) - thread-safe in-memory cache with TTL
+- **Read list** (`internal/readlist/`) - the persisted list of mentions marked read, with expiry
 
 All access goes through `glab api` and `gh api`, so glamr has no tokens or HTTP client of its own.
 
 ### Data Flow
 1. **Startup**: all tabs are fetched in parallel. Each tab is one GraphQL query (two for the GitHub Reviewing tab), paginated (10 GitLab MRs / 20 GitHub PRs per request) to stay well inside the query complexity and timeout limits.
-2. **Preloading**: pipeline jobs and discussions come with the MR data, so opening an MR is instant.
+2. **Preloading**: pipeline jobs and discussions come with the MR data, so opening an MR is instant. Mentions are fetched in the same refresh.
 3. **Navigation**: switching tabs uses the preloaded data.
 4. **Refresh**: every 5 minutes in the background (or on `r`). Only one refresh runs at a time; a failed refresh is not retried until the next interval. Tabs that fail keep their previous data while the others update.
 5. **Actions**: approve, notes, resolve and job actions update the view right away; reloading details (`r` in the detail view) refetches jobs and discussions.
@@ -288,7 +319,7 @@ The tests need no GitLab/GitHub access or network:
 - **GraphQL query tests** check that every MR query selects the same fields.
 - **Provider tests** check the conversion of GraphQL/REST responses, and drive both providers end-to-end through a fake `glab` or `gh` script placed first on `PATH`. The script records the arguments of each call and returns canned JSON, so tests can check both the parsing and the exact command lines (pagination cursors, search queries, `--repo`, `--hostname`, ...).
 - **TUI tests** send key presses and messages to the Bubble Tea model with in-memory fake providers, and check the resulting state and that actions reach the right forge.
-- **Cache tests** cover TTL expiry and concurrent access.
+- **Cache tests** cover TTL expiry and concurrent access; **read list tests** cover persistence, expiry and pruning.
 
 The provider tests use a POSIX shell for the fake CLIs, and are skipped on Windows.
 
@@ -302,6 +333,7 @@ glamr/
 │   ├── cache/           # In-memory MR cache
 │   ├── graphql/         # GraphQL queries and response types
 │   ├── provider/        # Provider interface, GitLab and GitHub implementations
+│   ├── readlist/        # Mentions marked read (state file)
 │   └── tui/             # Terminal UI
 ├── test_graphql.sh      # Manual smoke test against a real GitLab
 ├── go.mod

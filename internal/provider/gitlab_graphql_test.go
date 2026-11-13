@@ -505,3 +505,32 @@ exit 1`)
 		t.Errorf("error = %q, want %q", err, want)
 	}
 }
+
+func TestGitLabListMentions(t *testing.T) {
+	now := time.Now().UTC()
+	at := func(d time.Duration) string { return now.Add(-d).Format(time.RFC3339) }
+	page := `{"data":{"currentUser":{"username":"me","todos":{"pageInfo":{"hasNextPage":true,"endCursor":"NEXT"},"nodes":[
+	  {"id":"gid://gitlab/Todo/3","createdAt":"` + at(time.Hour) + `","body":"@me look","targetUrl":"https://gl/team/app/-/merge_requests/5#note_1","author":{"username":"alice"},"project":{"fullPath":"team/app"},"target":{"iid":"5","title":"Fix"}},
+	  {"id":"gid://gitlab/Todo/2","createdAt":"` + at(2*time.Hour) + `","body":"other repo","targetUrl":"u","author":{"username":"bob"},"project":{"fullPath":"team/other"},"target":{"iid":"9","title":"X"}},
+	  {"id":"gid://gitlab/Todo/1","createdAt":"` + at(10*24*time.Hour) + `","body":"too old","targetUrl":"u","author":{"username":"carol"},"project":{"fullPath":"team/app"},"target":{"iid":"1","title":"Old"}}
+	]}}}}`
+	fixture := writeFixture(t, "todos.json", page)
+	logPath := installFakeGlab(t, `cat "`+fixture+`"`)
+
+	p := &GitLabGraphQLProvider{repos: repoSet([]string{"team/app"})}
+	mentions, err := p.ListMentions(now.Add(-7 * 24 * time.Hour))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(mentions) != 1 {
+		t.Fatalf("mentions = %+v, want only the recent one in team/app", mentions)
+	}
+	m := mentions[0]
+	if m.ID != "gitlab:gid://gitlab/Todo/3" || m.Author != "alice" || m.MRID != "team/app!5" || m.Ref() != "!5" || m.URL != "https://gl/team/app/-/merge_requests/5#note_1" {
+		t.Errorf("mention = %+v", m)
+	}
+	// Newest first: stops at the first old to-do instead of fetching the next page
+	if calls := glabCalls(t, logPath); len(calls) != 1 || !strings.Contains(calls[0], "todos(action: [mentioned, directly_addressed]") {
+		t.Errorf("calls = %d %q", len(calls), calls)
+	}
+}

@@ -482,3 +482,48 @@ exit 1`)
 		t.Errorf("error = %q, want %q", err, want)
 	}
 }
+
+func TestGitHubListMentions(t *testing.T) {
+	now := time.Now().UTC()
+	at := func(d time.Duration) string { return now.Add(-d).Format(time.RFC3339) }
+	page := `{"data":{"search":{"pageInfo":{"hasNextPage":false},"nodes":[{
+	  "id":"PR_1","number":4,"title":"Feature","url":"https://github.com/octo/app/pull/4","createdAt":"` + at(time.Hour) + `",
+	  "body":"Fixes stuff, cc @Me","author":{"login":"alice"},"repository":{"nameWithOwner":"octo/app"},
+	  "comments":{"nodes":[
+	    {"id":"IC_old","url":"u1","author":{"login":"bob"},"body":"@me old","createdAt":"` + at(10*24*time.Hour) + `"},
+	    {"id":"IC_self","url":"u2","author":{"login":"me"},"body":"note to @me","createdAt":"` + at(time.Minute) + `"},
+	    {"id":"IC_none","url":"u3","author":{"login":"bob"},"body":"no mention","createdAt":"` + at(time.Minute) + `"},
+	    {"id":"IC_yes","url":"https://github.com/octo/app/pull/4#issuecomment-1","author":{"login":"bob"},"body":"@me thoughts?","createdAt":"` + at(30*time.Minute) + `"}
+	  ]},
+	  "reviews":{"nodes":[{"id":"PRR_1","url":"u5","author":{"login":"carol"},"body":"LGTM but @me should check","createdAt":"` + at(10*time.Minute) + `"}]},
+	  "reviewThreads":{"nodes":[{"comments":{"nodes":[{"id":"RC_1","url":"u6","author":{"login":"dave"},"body":"@me here","createdAt":"` + at(5*time.Minute) + `"}]}}]}
+	}]}}}`
+	fixture := writeFixture(t, "mentions.json", page)
+	logPath := installFakeGh(t, `cat "`+fixture+`"`)
+
+	p := &GitHubProvider{username: "me", repos: []string{"octo/app"}}
+	since := now.Add(-7 * 24 * time.Hour)
+	mentions, err := p.ListMentions(since)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	var ids []string
+	for _, m := range mentions {
+		ids = append(ids, m.ID)
+	}
+	// Newest first; the old comment, own comment and non-mention are left out
+	want := []string{"github:RC_1", "github:PRR_1", "github:IC_yes", "github:PR_1:description"}
+	if !reflect.DeepEqual(ids, want) {
+		t.Errorf("mention IDs = %v, want %v", ids, want)
+	}
+	if mentions[2].MRID != "octo/app#4" || mentions[2].Ref() != "#4" || mentions[2].URL != "https://github.com/octo/app/pull/4#issuecomment-1" {
+		t.Errorf("mention = %+v", mentions[2])
+	}
+
+	calls := glabCalls(t, logPath)
+	wantQuery := "-f q=is:pr mentions:@me archived:false updated:>=" + since.Format("2006-01-02") + " repo:octo/app"
+	if len(calls) != 1 || !strings.Contains(calls[0], wantQuery) {
+		t.Errorf("calls = %q, want query %q", calls, wantQuery)
+	}
+}

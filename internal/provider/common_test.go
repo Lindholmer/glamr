@@ -185,3 +185,31 @@ func TestAPIErrorMessage(t *testing.T) {
 		}
 	}
 }
+
+func TestMentionsUser(t *testing.T) {
+	tests := []struct {
+		text string
+		want bool
+	}{
+		{"@mlindholmer please check", true},
+		{"cc @MLindholmer", true}, // case-insensitive
+		{"thanks @mlindholmer.", true},
+		{"(@mlindholmer)", true},
+		{"@mlindholmer, @bob", true},
+		{"`@mlindholmer`", true},
+		{"ping @mlindholmerx", false},        // other user
+		{"@mlindholmer.smith", false},        // other user with a dot
+		{"@mlindholmer-bot", false},          // other user with a hyphen
+		{"mail mlindholmer@corp.com", false}, // email, not a mention
+		{"see group/@mlindholmer", false},
+		{"no mention here", false},
+	}
+	for _, tt := range tests {
+		if got := mentionsUser(tt.text, "MLindholmer"); got != tt.want {
+			t.Errorf("mentionsUser(%q) = %v, want %v", tt.text, got, tt.want)
+		}
+	}
+	if mentionsUser("@x", "") {
+		t.Error("empty login never matches")
+	}
+}
