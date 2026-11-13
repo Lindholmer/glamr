@@ -16,23 +16,42 @@ func main() {
 	var repos stringList
 	flag.Var(&repos, "repo", "Repository to query (can be specified multiple times). If omitted, queries all accessible repos.")
 	noTUI := flag.Bool("no-tui", false, "Disable TUI and print to stdout")
+	withGitHub := flag.Bool("github", false, "Also show GitHub pull requests (tabs 4-6), using the gh CLI")
+	githubHost := flag.String("github-host", "", "GitHub Enterprise host. Defaults to gh's configured host (github.com).")
+	var githubRepos stringList
+	flag.Var(&githubRepos, "github-repo", "GitHub repository to include (owner/name, can be repeated). If omitted, all repos.")
 	flag.Parse()
 
 	// --repo filters the user's MRs client-side, so a single provider serves any number of repos
-	p, err := provider.NewGitLabGraphQLProvider(*host, repos...)
+	gitlab, err := provider.NewGitLabGraphQLProvider(*host, repos...)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "Error: %v\n", err)
 		os.Exit(1)
 	}
 
+	// Typed as the interface so "no GitHub" is a real nil, not a nil *GitHubProvider
+	var github provider.Provider
+	if *withGitHub || *githubHost != "" || len(githubRepos) > 0 {
+		gh, err := provider.NewGitHubProvider(*githubHost, githubRepos...)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "Error: %v\n", err)
+			os.Exit(1)
+		}
+		github = gh
+	}
+
 	// If no-tui flag, run in simple mode
 	if *noTUI {
-		runSimpleMode(p)
+		runSimpleMode(gitlab)
+		if github != nil {
+			fmt.Println()
+			runSimpleMode(github)
+		}
 		return
 	}
 
 	// Run TUI
-	m := tui.NewModel(p)
+	m := tui.NewModel(gitlab, github)
 	if _, err := tea.NewProgram(m, tea.WithAltScreen()).Run(); err != nil {
 		fmt.Fprintf(os.Stderr, "Error: %v\n", err)
 		os.Exit(1)
@@ -63,14 +82,18 @@ func runSimpleMode(p provider.Provider) {
 	fmt.Printf("Authenticated as: %s\n\n", user)
 
 	// Fetch authored MRs
-	fmt.Println("Fetching your MRs...")
+	items := "MRs"
+	if p.Name() == "GitHub" {
+		items = "PRs"
+	}
+	fmt.Printf("Fetching your %s...\n", items)
 	mrs, err := p.ListMRs(provider.ScopeAuthored)
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "Error listing MRs: %v\n", err)
+		fmt.Fprintf(os.Stderr, "Error listing %s: %v\n", items, err)
 		os.Exit(1)
 	}
 
-	fmt.Printf("Found %d MRs:\n\n", len(mrs))
+	fmt.Printf("Found %d %s:\n\n", len(mrs), items)
 
 	for _, mr := range mrs {
 		// Pipeline status with emoji
@@ -115,7 +138,7 @@ func runSimpleMode(p provider.Provider) {
 			statusIcon = "❌"
 		}
 
-		fmt.Printf("%s !%d %s\n", statusIcon, mr.IID, mr.Title)
+		fmt.Printf("%s %s %s\n", statusIcon, mr.Ref(), mr.Title)
 		fmt.Printf("   %s → %s | %s%s%s\n",
 			mr.SourceBranch, mr.TargetBranch,
 			pipelineStatus, conflict, approvals)

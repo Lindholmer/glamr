@@ -63,7 +63,7 @@ func (m Model) handleReplyKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return m, nil
 	case tea.KeyEnter:
 		mr, ok := m.selectedMR()
-		p := m.activeProvider()
+		p := m.selectedProvider()
 		if m.replyInput == "" || !ok || p == nil {
 			return m, nil
 		}
@@ -161,7 +161,7 @@ func (m Model) handleNoteThreadKey(key string) (tea.Model, tea.Cmd) {
 		return m, nil
 	case "x":
 		mr, ok := m.selectedMR()
-		p := m.activeProvider()
+		p := m.selectedProvider()
 		if !m.selectedNote.Resolvable || m.selectedNote.ID == "" || !ok || p == nil {
 			return m, nil
 		}
@@ -205,7 +205,7 @@ func (m Model) handleFilesKey(key string) (tea.Model, tea.Cmd) {
 func (m Model) handleDetailKey(key string) (tea.Model, tea.Cmd) {
 	d := m.detailView
 	mr := d.mr
-	p := m.activeProvider()
+	p := m.selectedProvider()
 
 	switch key {
 	case "left", "h":
@@ -296,7 +296,7 @@ func (m Model) handleDetailKey(key string) (tea.Model, tea.Cmd) {
 // handleListKey handles the main MR list.
 func (m Model) handleListKey(key string) (tea.Model, tea.Cmd) {
 	mr, hasMR := m.selectedMR()
-	p := m.activeProvider()
+	p := m.selectedProvider()
 
 	switch key {
 	case "q":
@@ -309,7 +309,7 @@ func (m Model) handleListKey(key string) (tea.Model, tea.Cmd) {
 		}
 		m.refreshing = true
 		m.lastRefreshStart = time.Now()
-		return m, fetchAllScopesMRs(m.providers)
+		return m, fetchTabs(m)
 
 	case "up", "k":
 		if m.cursor > 0 {
@@ -327,12 +327,8 @@ func (m Model) handleListKey(key string) (tea.Model, tea.Cmd) {
 			}
 		}
 
-	case "1":
-		m.switchScope(provider.ScopeAuthored)
-	case "2":
-		m.switchScope(provider.ScopeAssigned)
-	case "3":
-		m.switchScope(provider.ScopeReviewing)
+	case "1", "2", "3", "4", "5", "6":
+		m.switchTab(int(key[0] - '1'))
 
 	case "o":
 		if hasMR {
@@ -352,23 +348,16 @@ func (m Model) handleListKey(key string) (tea.Model, tea.Cmd) {
 	case "enter":
 		if hasMR {
 			m.detailView = &DetailView{
-				mr:     mr,
-				jobs:   mr.PipelineJobs, // Use cached jobs
-				notes:  mr.Notes,        // Use cached notes
-				width:  m.width,
-				height: m.height,
+				provider: p,
+				mr:       mr,
+				jobs:     mr.PipelineJobs, // Use cached jobs
+				notes:    mr.Notes,        // Use cached notes
+				width:    m.width,
+				height:   m.height,
 			}
 			m.showingDetail = true
 			m.mrChanges = nil // Clear cached changes from previous MR
 		}
 	}
 	return m, nil
-}
-
-// switchScope shows the cached MRs of another tab.
-func (m *Model) switchScope(scope provider.Scope) {
-	m.scope = scope
-	m.mrs = m.scopeMRs(scope)
-	m.cursor = 0
-	m.scroll = 0
 }

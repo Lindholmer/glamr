@@ -29,7 +29,7 @@ func (f FilesView) Render() string {
 		statusIcon = "❌"
 	}
 
-	titleLine := fmt.Sprintf("%s !%d %s", statusIcon, f.mr.IID, f.mr.Title)
+	titleLine := fmt.Sprintf("%s %s %s", statusIcon, f.mr.Ref(), f.mr.Title)
 	metaStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("#888888"))
 	fileCount := 0
 	if f.changes != nil {

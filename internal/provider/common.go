@@ -30,6 +30,20 @@ func commandError(msg string, err error) error {
 	return fmt.Errorf("%s: %w", msg, err)
 }
 
+// awaitsReply reports whether a thread (given its comment authors in order) needs the user's
+// attention: the user took part, but someone else wrote the latest comment.
+func awaitsReply(authors []string, me string) bool {
+	if len(authors) == 0 || authors[len(authors)-1] == me {
+		return false
+	}
+	for _, a := range authors {
+		if a == me {
+			return true
+		}
+	}
+	return false
+}
+
 // parseMRID splits an MR ID of the form "group/project!123" into its project path and IID.
 func parseMRID(id string) (repo, iid string, err error) {
 	i := strings.LastIndex(id, "!")

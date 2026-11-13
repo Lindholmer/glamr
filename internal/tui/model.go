@@ -18,12 +18,11 @@ import (
 )
 
 type Model struct {
-	providers         []provider.Provider
-	scope             provider.Scope
-	mrs               []provider.MergeRequest
-	mrsAuthored       []provider.MergeRequest // Cached authored MRs
-	mrsAssigned       []provider.MergeRequest // Cached assigned MRs
-	mrsReviewing      []provider.MergeRequest // Cached reviewing MRs
+	gitlab            provider.Provider
+	github            provider.Provider                // nil unless --github
+	tabMRs            [maxTabs][]provider.MergeRequest // Cached MRs per tab (see tabs.go)
+	activeTab         int
+	mrs               []provider.MergeRequest // MRs of the active tab
 	cursor            int
 	scroll            int // Scroll offset for MR list
 	loading           bool
@@ -52,13 +51,6 @@ type Model struct {
 }
 
 // Messages
-type allScopesMRsMsg struct {
-	authored  []provider.MergeRequest
-	assigned  []provider.MergeRequest
-	reviewing []provider.MergeRequest
-	err       error
-}
-
 type detailDataMsg struct {
 	jobs  []provider.PipelineJob
 	notes []provider.MRNote
@@ -112,10 +104,11 @@ type draftMsg struct {
 	err  error
 }
 
-func NewModel(providers ...provider.Provider) Model {
+// NewModel creates the TUI model. github may be nil, in which case only GitLab tabs are shown.
+func NewModel(gitlab, github provider.Provider) Model {
 	return Model{
-		providers:        providers,
-		scope:            provider.ScopeAuthored,
+		gitlab:           gitlab,
+		github:           github,
 		cache:            cache.NewCache(5 * time.Minute), // 5 minute cache
 		refreshInterval:  5 * time.Minute,                 // Check every 5 minutes
 		loading:          true,
@@ -125,7 +118,7 @@ func NewModel(providers ...provider.Provider) Model {
 
 func (m Model) Init() tea.Cmd {
 	return tea.Batch(
-		fetchAllScopesMRs(m.providers), // Fetch all scopes at once
+		fetchTabs(m), // Fetch all tabs at once
 		tickCmd(),
 	)
 }
@@ -146,37 +139,8 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case tea.KeyMsg:
 		return m.handleKey(msg)
 
-	case allScopesMRsMsg:
-		wasInitialLoad := m.loading
-		m.loading = false
-		m.refreshing = false // Clear refreshing flag
-		if msg.err != nil {
-			if wasInitialLoad {
-				m.err = msg.err
-			} else {
-				// Keep showing existing data; retry on the next interval
-				m.refreshErr = msg.err
-			}
-		} else {
-			m.err = nil
-			m.refreshErr = nil
-			// Cache all three scopes
-			m.mrsAuthored = msg.authored
-			m.mrsAssigned = msg.assigned
-			m.mrsReviewing = sortReviewingMRs(msg.reviewing)
-
-			// Set current view based on active scope
-			m.mrs = m.scopeMRs(m.scope)
-
-			// Reset cursor if out of bounds
-			if m.cursor >= len(m.mrs) {
-				m.cursor = 0
-				m.scroll = 0
-			}
-
-			// Update cache with current scope's data
-			m.cache.Set(m.mrs)
-		}
+	case tabsFetchedMsg:
+		m.applyTabResults(msg)
 		return m, nil
 
 	case tickMsg:
@@ -186,7 +150,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.refreshing = true
 			m.lastRefreshStart = time.Now()
 			return m, tea.Batch(
-				fetchAllScopesMRs(m.providers), // Fetch all scopes on refresh
+				fetchTabs(m), // Fetch all tabs on refresh
 				tickCmd(),
 			)
 		}
@@ -221,7 +185,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.err = msg.err
 		} else {
 			// Refresh detail data after action
-			if p := m.activeProvider(); m.showingDetail && m.detailView != nil && p != nil {
+			if p := m.selectedProvider(); m.showingDetail && m.detailView != nil && p != nil {
 				return m, fetchDetailData(p, m.detailView.mr)
 			}
 		}
@@ -231,9 +195,9 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if msg.err != nil {
 			m.err = msg.err
 		} else {
-			// Update every cached copy of the MR. m.mrs aliases one of the scope slices,
+			// Update every cached copy of the MR. m.mrs aliases one of the tab slices,
 			// so applyApproval is idempotent to avoid counting the same approval twice.
-			for _, list := range [][]provider.MergeRequest{m.mrs, m.mrsAuthored, m.mrsAssigned, m.mrsReviewing} {
+			for _, list := range append([][]provider.MergeRequest{m.mrs}, m.tabMRs[:]...) {
 				for i := range list {
 					if list[i].ID == msg.mrID {
 						applyApproval(&list[i], msg.approved)
@@ -273,7 +237,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			// Refresh to pick up the new title/draft state
 			m.refreshing = true
 			m.lastRefreshStart = time.Now()
-			return m, fetchAllScopesMRs(m.providers)
+			return m, fetchTabs(m)
 		}
 		return m, nil
 
@@ -322,7 +286,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.replyInput = ""
 		m.selectedNote = provider.MRNote{}
 
-		if p := m.activeProvider(); m.showingDetail && m.detailView != nil && p != nil {
+		if p := m.selectedProvider(); m.showingDetail && m.detailView != nil && p != nil {
 			return m, fetchDetailData(p, m.detailView.mr)
 		}
 		return m, nil
@@ -357,7 +321,8 @@ func (m Model) View() string {
 	}
 
 	// Header
-	header := headerStyle.Render(fmt.Sprintf("glamr - %s MRs", m.scopeName()))
+	p := m.tabProvider(m.activeTab)
+	header := headerStyle.Render(fmt.Sprintf("glamr - %s %s %s", p.Name(), scopeName(tabScope(m.activeTab)), itemsName(p)))
 
 	// Tabs
 	tabs := m.renderTabs()
@@ -381,7 +346,7 @@ func (m Model) View() string {
 	list := listStyle.Render(listContent)
 
 	// Help
-	help := helpStyle.Render("↑/↓: navigate | enter: details | a: approve/unapprove | D: toggle draft | o: open in browser | 1/2/3: switch scope | r: refresh | q: quit")
+	help := helpStyle.Render(fmt.Sprintf("↑/↓: navigate | enter: details | a: approve/unapprove | D: toggle draft | o: open in browser | 1-%d: switch tab | r: refresh | q: quit", m.tabCount()))
 
 	return lipgloss.JoinVertical(
 		lipgloss.Left,
@@ -395,46 +360,30 @@ func (m Model) View() string {
 	)
 }
 
-func (m Model) scopeName() string {
-	switch m.scope {
-	case provider.ScopeAuthored:
-		return "Authored"
-	case provider.ScopeAssigned:
-		return "Assigned"
-	case provider.ScopeReviewing:
-		return "Reviewing"
-	default:
-		return "Unknown"
-	}
-}
-
-func (m Model) renderTabs() string {
-	// Check if there are truly unreviewed MRs in reviewing tab
-	// Mark as needing attention if:
-	// 1. UNREVIEWED or UNAPPROVED (not commented/approved/requested changes)
-	// 2. OR has unresolved replies where user is not the last commenter
-	hasUnreviewed := false
-	for _, mr := range m.mrsReviewing {
-		// Skip draft MRs
+// needsAttention reports whether a reviewing tab has MRs waiting for the user: unreviewed
+// (or approval revoked) non-drafts, or threads where someone else replied last.
+func needsAttention(mrs []provider.MergeRequest) bool {
+	for _, mr := range mrs {
 		if mr.Status == provider.StatusDraft {
 			continue
 		}
-		// Flag if truly unreviewed (not commented/approved/requested changes)
-		if mr.UserReviewState == provider.ReviewStateUnreviewed || mr.UserReviewState == provider.ReviewStateUnapproved {
-			hasUnreviewed = true
-			break
-		}
-		// Also flag if there are unresolved replies where user commented but is not the last commenter
-		if mr.HasUnresolvedReplies {
-			hasUnreviewed = true
-			break
+		if mr.UserReviewState == provider.ReviewStateUnreviewed || mr.UserReviewState == provider.ReviewStateUnapproved || mr.HasUnresolvedReplies {
+			return true
 		}
 	}
+	return false
+}
 
-	tabs := []string{
-		m.renderTab("1. Authored", m.scope == provider.ScopeAuthored, false),
-		m.renderTab("2. Assigned", m.scope == provider.ScopeAssigned, false),
-		m.renderTab("3. Reviewing", m.scope == provider.ScopeReviewing, hasUnreviewed),
+func (m Model) renderTabs() string {
+	var tabs []string
+	for i := 0; i < m.tabCount(); i++ {
+		if m.github != nil && i%tabsPerForge == 0 {
+			// Label each forge's group of tabs when both are shown
+			tabs = append(tabs, forgeLabelStyle.Render(m.tabProvider(i).Name()+":"))
+		}
+		attention := tabScope(i) == provider.ScopeReviewing && needsAttention(m.tabMRs[i])
+		label := fmt.Sprintf("%d. %s", i+1, scopeName(tabScope(i)))
+		tabs = append(tabs, m.renderTab(label, i == m.activeTab, attention))
 	}
 	return lipgloss.JoinHorizontal(lipgloss.Top, tabs...)
 }
@@ -461,21 +410,12 @@ func (m Model) renderStatus() string {
 
 	timeSince := time.Since(m.cache.LastRefresh()).Round(time.Second)
 
-	// Count repos
-	repoCount := len(m.providers)
-	if len(m.providers) == 1 {
-		// Check if it's the "all repos" provider
-		if len(m.mrs) > 0 {
-			// Count unique repos from MRs
-			repoMap := make(map[string]bool)
-			for _, mr := range m.mrs {
-				repoMap[mr.RepoName] = true
-			}
-			repoCount = len(repoMap)
-		}
+	repos := make(map[string]bool)
+	for _, mr := range m.mrs {
+		repos[mr.RepoName] = true
 	}
 
-	status := fmt.Sprintf("Last refresh: %v ago | %d MRs from %d repos", timeSince, len(m.mrs), repoCount)
+	status := fmt.Sprintf("Last refresh: %v ago | %d %s from %d repos", timeSince, len(m.mrs), itemsName(m.tabProvider(m.activeTab)), len(repos))
 	if m.refreshing {
 		status += " | ⟳ Refreshing..."
 	} else if m.refreshErr != nil {
@@ -576,7 +516,7 @@ func (m Model) renderMR(mr provider.MergeRequest, selected bool) string {
 	}
 
 	// Format the MR
-	title := fmt.Sprintf("%s !%d %s", statusIcon, mr.IID, mr.Title)
+	title := fmt.Sprintf("%s %s %s", statusIcon, mr.Ref(), mr.Title)
 	repo := fmt.Sprintf("   [%s]", mr.RepoName)
 	branch := fmt.Sprintf("   %s → %s", mr.SourceBranch, mr.TargetBranch)
 
@@ -588,92 +528,7 @@ func (m Model) renderMR(mr provider.MergeRequest, selected bool) string {
 		pipeline = fmt.Sprintf("   %s %s%s", pipelineStyle.Render(pipelineIcon), mr.Pipeline.Status, indicatorStr)
 	}
 
-	// Approval/Review status with color coding
-	var approvalLine string
-	approvalStyle := lipgloss.NewStyle()
-
-	// For reviewing scope, use review state for coloring
-	if m.scope == provider.ScopeReviewing && mr.UserReviewState != "" {
-		// If there are unresolved replies where user is not the last commenter, show red
-		if mr.HasUnresolvedReplies {
-			approvalStyle = approvalStyle.Foreground(lipgloss.Color("#ff0000"))
-			if mr.RequiredApprovals > 0 {
-				approvalLine = approvalStyle.Render(fmt.Sprintf("   🔴 New replies to review | %d/%d", mr.ApprovalCount, mr.RequiredApprovals))
-			} else {
-				approvalLine = approvalStyle.Render(fmt.Sprintf("   🔴 New replies to review | %d/0", mr.ApprovalCount))
-			}
-		} else {
-			switch mr.UserReviewState {
-			case provider.ReviewStateApproved:
-				// Approved - green
-				approvalStyle = approvalStyle.Foreground(lipgloss.Color("#00ff00"))
-				if mr.RequiredApprovals > 0 {
-					approvalLine = approvalStyle.Render(fmt.Sprintf("   ✓ You approved | %d/%d", mr.ApprovalCount, mr.RequiredApprovals))
-				} else {
-					approvalLine = approvalStyle.Render(fmt.Sprintf("   ✓ You approved | %d/0", mr.ApprovalCount))
-				}
-			case provider.ReviewStateReviewed:
-				// Commented (no approval/changes) - yellow
-				approvalStyle = approvalStyle.Foreground(lipgloss.Color("#ffaa00"))
-				if mr.RequiredApprovals > 0 {
-					approvalLine = approvalStyle.Render(fmt.Sprintf("   💬 You commented | %d/%d", mr.ApprovalCount, mr.RequiredApprovals))
-				} else {
-					approvalLine = approvalStyle.Render(fmt.Sprintf("   💬 You commented | %d/0", mr.ApprovalCount))
-				}
-			case provider.ReviewStateRequestedChanges:
-				// Requested changes - red
-				approvalStyle = approvalStyle.Foreground(lipgloss.Color("#ff0000"))
-				if mr.RequiredApprovals > 0 {
-					approvalLine = approvalStyle.Render(fmt.Sprintf("   ✗ You requested changes | %d/%d", mr.ApprovalCount, mr.RequiredApprovals))
-				} else {
-					approvalLine = approvalStyle.Render(fmt.Sprintf("   ✗ You requested changes | %d/0", mr.ApprovalCount))
-				}
-			default:
-				// Unreviewed/Unapproved - default/white (needs review)
-				if mr.RequiredApprovals > 0 {
-					approvalStyle = approvalStyle.Foreground(lipgloss.Color("#888888"))
-					approvalLine = approvalStyle.Render(fmt.Sprintf("   ○ %d/%d approvals", mr.ApprovalCount, mr.RequiredApprovals))
-				} else {
-					approvalStyle = approvalStyle.Foreground(lipgloss.Color("#888888"))
-					approvalLine = approvalStyle.Render(fmt.Sprintf("   ○ %d/0 approvals (optional)", mr.ApprovalCount))
-				}
-			}
-		}
-	} else {
-		// For authored/assigned scopes, use existing approval logic
-		if mr.RequiredApprovals > 0 {
-			if mr.UserApproved && mr.Approved {
-				// You approved AND fully approved - green checkmark
-				approvalStyle = approvalStyle.Foreground(lipgloss.Color("#00ff00"))
-				approvalLine = approvalStyle.Render(fmt.Sprintf("   ✓ You approved | %d/%d", mr.ApprovalCount, mr.RequiredApprovals))
-			} else if mr.UserApproved {
-				// You approved but waiting for others - green circle
-				approvalStyle = approvalStyle.Foreground(lipgloss.Color("#00ff00"))
-				approvalLine = approvalStyle.Render(fmt.Sprintf("   ○ You approved | %d/%d", mr.ApprovalCount, mr.RequiredApprovals))
-			} else if mr.Approved {
-				// Fully approved but not by you - bright checkmark
-				approvalLine = fmt.Sprintf("   ✓ %d/%d approved", mr.ApprovalCount, mr.RequiredApprovals)
-			} else {
-				// Waiting for approvals (you haven't approved) - grayscale/dim
-				approvalStyle = approvalStyle.Foreground(lipgloss.Color("#888888"))
-				approvalLine = approvalStyle.Render(fmt.Sprintf("   ○ %d/%d approvals", mr.ApprovalCount, mr.RequiredApprovals))
-			}
-		} else {
-			// No approvals required (optional reviews)
-			if mr.UserApproved {
-				// You approved even though optional - green checkmark
-				approvalStyle = approvalStyle.Foreground(lipgloss.Color("#00ff00"))
-				approvalLine = approvalStyle.Render(fmt.Sprintf("   ✓ You approved | %d/0", mr.ApprovalCount))
-			} else if mr.ApprovalCount > 0 {
-				// Others approved but not you
-				approvalLine = fmt.Sprintf("   ✓ %d/0 approved", mr.ApprovalCount)
-			} else {
-				// No approvals yet (optional)
-				approvalStyle = approvalStyle.Foreground(lipgloss.Color("#888888"))
-				approvalLine = approvalStyle.Render("   ○ 0/0 approvals (optional)")
-			}
-		}
-	}
+	approvalLine := renderApprovalLine(mr, tabScope(m.activeTab) == provider.ScopeReviewing)
 
 	repoStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("#666666")).Italic(true)
 	repoLine := repoStyle.Render(repo)
@@ -693,65 +548,6 @@ func (m Model) renderMR(mr provider.MergeRequest, selected bool) string {
 }
 
 // Commands
-
-// fetchAllScopesMRs fetches MRs from all three scopes in parallel queries
-func fetchAllScopesMRs(providers []provider.Provider) tea.Cmd {
-	return func() tea.Msg {
-		// Use channels to fetch all three scopes in parallel
-		type scopeResult struct {
-			scope provider.Scope
-			mrs   []provider.MergeRequest
-			err   error
-		}
-
-		results := make(chan scopeResult, 3)
-
-		// Fetch each scope in parallel
-		for _, scope := range []provider.Scope{provider.ScopeAuthored, provider.ScopeAssigned, provider.ScopeReviewing} {
-			go func(s provider.Scope) {
-				var allMRs []provider.MergeRequest
-				var lastErr error
-
-				for _, p := range providers {
-					mrs, err := p.ListMRs(s)
-					if err != nil {
-						lastErr = err
-						continue
-					}
-					allMRs = append(allMRs, mrs...)
-				}
-
-				results <- scopeResult{scope: s, mrs: allMRs, err: lastErr}
-			}(scope)
-		}
-
-		// Collect all results
-		var authored, assigned, reviewing []provider.MergeRequest
-		var lastErr error
-
-		for i := 0; i < 3; i++ {
-			result := <-results
-			if result.err != nil {
-				lastErr = result.err
-			}
-			switch result.scope {
-			case provider.ScopeAuthored:
-				authored = result.mrs
-			case provider.ScopeAssigned:
-				assigned = result.mrs
-			case provider.ScopeReviewing:
-				reviewing = result.mrs
-			}
-		}
-
-		return allScopesMRsMsg{
-			authored:  authored,
-			assigned:  assigned,
-			reviewing: reviewing,
-			err:       lastErr,
-		}
-	}
-}
 
 func tickCmd() tea.Cmd {
 	return tea.Tick(time.Second, func(t time.Time) tea.Msg {
@@ -976,7 +772,7 @@ func renderFullDiff(changes *provider.MRChanges, mr provider.MergeRequest, width
 		}
 		return diffMsg{
 			content: content,
-			title:   fmt.Sprintf("Full Diff: !%d %s", mr.IID, mr.Title),
+			title:   fmt.Sprintf("Full Diff: %s %s", mr.Ref(), mr.Title),
 		}
 	}
 }
@@ -1098,25 +894,13 @@ func (m Model) selectedMR() (provider.MergeRequest, bool) {
 	return provider.MergeRequest{}, false
 }
 
-// activeProvider returns the provider used for actions. Actions carry the repo in their
-// arguments (MR ID "repo!iid" or an explicit repo), so any configured provider can perform them.
-func (m Model) activeProvider() provider.Provider {
-	if len(m.providers) > 0 {
-		return m.providers[0]
+// selectedProvider returns the provider that owns the selected MR: the detail view's,
+// else the active tab's.
+func (m Model) selectedProvider() provider.Provider {
+	if m.showingDetail && m.detailView != nil && m.detailView.provider != nil {
+		return m.detailView.provider
 	}
-	return nil
-}
-
-// scopeMRs returns the cached MRs for a tab.
-func (m Model) scopeMRs(scope provider.Scope) []provider.MergeRequest {
-	switch scope {
-	case provider.ScopeAssigned:
-		return m.mrsAssigned
-	case provider.ScopeReviewing:
-		return m.mrsReviewing
-	default:
-		return m.mrsAuthored
-	}
+	return m.tabProvider(m.activeTab)
 }
 
 // visibleMRCount is how many MRs fit in the main list.
@@ -1252,9 +1036,9 @@ func (m Model) renderNoteThread() string {
 
 	var header string
 	if m.selectedNote.ID == "" {
-		header = headerStyle.Render(fmt.Sprintf("New Note - !%d %s", mr.IID, mr.Title))
+		header = headerStyle.Render(fmt.Sprintf("New Note - %s %s", mr.Ref(), mr.Title))
 	} else {
-		header = headerStyle.Render(fmt.Sprintf("Discussion - !%d %s", mr.IID, mr.Title))
+		header = headerStyle.Render(fmt.Sprintf("Discussion - %s %s", mr.Ref(), mr.Title))
 	}
 
 	viewHeight := m.noteThreadViewHeight()
@@ -1313,6 +1097,11 @@ var (
 			Foreground(lipgloss.Color("#00ffff")).
 			Padding(1, 2)
 
+	forgeLabelStyle = lipgloss.NewStyle().
+			Padding(0, 0, 0, 2).
+			Bold(true).
+			Foreground(lipgloss.Color("#666666"))
+
 	tabStyle = lipgloss.NewStyle().
 			Padding(0, 2).
 			Foreground(lipgloss.Color("#888888"))
@@ -1348,3 +1137,65 @@ var (
 			Foreground(lipgloss.Color("#ff0000")).
 			Padding(2, 2)
 )
+
+// renderApprovalLine renders an MR's approval/review status. In reviewing tabs it shows the
+// user's own review state; elsewhere the overall approval state.
+func renderApprovalLine(mr provider.MergeRequest, reviewing bool) string {
+	green := lipgloss.NewStyle().Foreground(lipgloss.Color("#00ff00"))
+	red := lipgloss.NewStyle().Foreground(lipgloss.Color("#ff0000"))
+	yellow := lipgloss.NewStyle().Foreground(lipgloss.Color("#ffaa00"))
+	grey := lipgloss.NewStyle().Foreground(lipgloss.Color("#888888"))
+	plain := lipgloss.NewStyle()
+	line := func(style lipgloss.Style, text string) string { return style.Render("   " + text) }
+
+	// counts follows a "|"; approved/pending are standalone summaries
+	required := mr.RequiredApprovals > 0
+	counts := fmt.Sprintf("%d/%d", mr.ApprovalCount, mr.RequiredApprovals)
+	approved, pending := counts+" approved", counts+" approvals"
+	if mr.ReviewDecision != "" {
+		// GitHub with a review rule: the required count isn't exposed, only the decision
+		required = true
+		counts = fmt.Sprintf("%d approved", mr.ApprovalCount)
+		switch mr.ReviewDecision {
+		case "REVIEW_REQUIRED":
+			counts += ", review required"
+		case "CHANGES_REQUESTED":
+			counts += ", changes requested"
+		}
+		approved, pending = counts, counts
+	}
+
+	if reviewing && mr.UserReviewState != "" {
+		switch {
+		case mr.HasUnresolvedReplies:
+			return line(red, "🔴 New replies to review | "+counts)
+		case mr.UserReviewState == provider.ReviewStateApproved:
+			return line(green, "✓ You approved | "+counts)
+		case mr.UserReviewState == provider.ReviewStateReviewed:
+			return line(yellow, "💬 You commented | "+counts)
+		case mr.UserReviewState == provider.ReviewStateRequestedChanges:
+			return line(red, "✗ You requested changes | "+counts)
+		case required:
+			return line(grey, "○ "+pending)
+		default:
+			return line(grey, "○ "+pending+" (optional)")
+		}
+	}
+
+	switch {
+	case required && mr.UserApproved && mr.Approved:
+		return line(green, "✓ You approved | "+counts)
+	case required && mr.UserApproved:
+		return line(green, "○ You approved | "+counts)
+	case required && mr.Approved:
+		return line(plain, "✓ "+approved)
+	case required:
+		return line(grey, "○ "+pending)
+	case mr.UserApproved:
+		return line(green, "✓ You approved | "+counts)
+	case mr.ApprovalCount > 0:
+		return line(plain, "✓ "+approved)
+	default:
+		return line(grey, "○ "+pending+" (optional)")
+	}
+}

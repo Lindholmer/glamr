@@ -19,11 +19,6 @@ func TestGraphQLBuildGlabCommand(t *testing.T) {
 		t.Errorf("args = %q, want %q", cmd.Args, want)
 	}
 
-	cmd = withHost.buildGlabCommand("mr", "list")
-	if !containsString(cmd.Env, "GITLAB_HOST=gitlab.example.com") {
-		t.Errorf("non-api command should set GITLAB_HOST, env = %v", cmd.Env)
-	}
-
 	// Without --host, glab's default host must be used rather than passing an empty --hostname
 	noHost := &GitLabGraphQLProvider{}
 	cmd = noHost.buildGlabCommand("api", "projects/1")

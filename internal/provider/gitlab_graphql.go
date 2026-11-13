@@ -48,7 +48,7 @@ func NewGitLabGraphQLProvider(host string, repos ...string) (*GitLabGraphQLProvi
 }
 
 func (p *GitLabGraphQLProvider) Name() string {
-	return "gitlab-graphql"
+	return "GitLab"
 }
 
 func (p *GitLabGraphQLProvider) GetCurrentUser() (string, error) {
@@ -423,22 +423,7 @@ func (p *GitLabGraphQLProvider) buildGlabCommand(args ...string) *exec.Cmd {
 }
 
 func (p *GitLabGraphQLProvider) buildGlabCommandContext(ctx context.Context, args ...string) *exec.Cmd {
-	cmd := exec.CommandContext(ctx, "glab", args...)
-
-	// No host means "use glab's default/authenticated host"
-	if p.host == "" {
-		return cmd
-	}
-
-	// Set hostname for API commands
-	if len(args) > 0 && args[0] == "api" {
-		cmd.Args = append(cmd.Args[:2], append([]string{"--hostname", p.host}, cmd.Args[2:]...)...)
-	} else {
-		// For non-api commands, set via environment
-		cmd.Env = append(cmd.Environ(), "GITLAB_HOST="+p.host)
-	}
-
-	return cmd
+	return cliCommand(ctx, "glab", p.host, args...)
 }
 
 // graphQLArgs builds the glab arguments for a GraphQL request. Strings are passed with
@@ -600,25 +585,15 @@ func (p *GitLabGraphQLProvider) convertGraphQLMR(gqlMR graphql.MergeRequest) Mer
 			mr.HasUnresolvedDiscussions = true
 		}
 
-		// Check if user commented but is not the last commenter on unresolved threads
-		if discussion.Resolvable && !discussion.Resolved && len(discussion.Notes.Nodes) > 0 {
-			userCommented := false
-			var lastCommenter string
-
+		// Unresolved thread where the user took part but someone else had the last word
+		if discussion.Resolvable && !discussion.Resolved {
+			var authors []string
 			for _, note := range discussion.Notes.Nodes {
-				// Skip system notes
-				if note.System {
-					continue
+				if !note.System {
+					authors = append(authors, note.Author.Username)
 				}
-
-				if note.Author.Username == p.username {
-					userCommented = true
-				}
-				lastCommenter = note.Author.Username
 			}
-
-			// If user commented but is not the last commenter, mark as needing attention
-			if userCommented && lastCommenter != "" && lastCommenter != p.username {
+			if awaitsReply(authors, p.username) {
 				mr.HasUnresolvedReplies = true
 			}
 		}
