@@ -43,15 +43,12 @@ fi
 
 echo ""
 echo "5. Testing GraphQL provider (simple mode)..."
-echo "   Running: ./glamr --no-tui --use-graphql"
+echo "   Running: ./glamr --no-tui"
 echo ""
-./glamr --no-tui --use-graphql
+./glamr --no-tui
 
 echo ""
 echo "=== All tests passed! ==="
 echo ""
 echo "To run the full TUI with GraphQL:"
 echo "  ./glamr"
-echo ""
-echo "To use REST API instead:"
-echo "  ./glamr --use-graphql=false"

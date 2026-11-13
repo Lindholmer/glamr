@@ -12,64 +12,28 @@ import (
 
 func main() {
 	// Parse flags
-	host := flag.String("host", "", "GitLab host (e.g., gitlab.infr.zglbl.net)")
+	host := flag.String("host", "", "GitLab host (e.g. gitlab.example.com). Defaults to glab's configured host.")
 	var repos stringList
 	flag.Var(&repos, "repo", "Repository to query (can be specified multiple times). If omitted, queries all accessible repos.")
 	noTUI := flag.Bool("no-tui", false, "Disable TUI and print to stdout")
-	useGraphQL := flag.Bool("use-graphql", true, "Use GraphQL API (default: true, use --use-graphql=false for REST)")
 	flag.Parse()
 
-	// Create GitLab providers
-	var providers []provider.Provider
-
-	if len(repos) == 0 {
-		// No repos specified - create a single provider that will query all repos
-		fmt.Fprintln(os.Stderr, "No --repo specified, discovering all accessible repositories...")
-
-		var p provider.Provider
-		var err error
-		if *useGraphQL {
-			p, err = provider.NewGitLabGraphQLProvider(*host, "")
-		} else {
-			p, err = provider.NewGitLabProvider(*host, "")
-		}
-
-		if err != nil {
-			fmt.Fprintf(os.Stderr, "Error: %v\n", err)
-			os.Exit(1)
-		}
-		providers = append(providers, p)
-	} else {
-		// Specific repos requested - create a provider for each
-		for _, repo := range repos {
-			var p provider.Provider
-			var err error
-			if *useGraphQL {
-				p, err = provider.NewGitLabGraphQLProvider(*host, repo)
-			} else {
-				p, err = provider.NewGitLabProvider(*host, repo)
-			}
-
-			if err != nil {
-				fmt.Fprintf(os.Stderr, "Error creating provider for %s: %v\n", repo, err)
-				os.Exit(1)
-			}
-			providers = append(providers, p)
-		}
+	// --repo filters the user's MRs client-side, so a single provider serves any number of repos
+	p, err := provider.NewGitLabGraphQLProvider(*host, repos...)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "Error: %v\n", err)
+		os.Exit(1)
 	}
 
 	// If no-tui flag, run in simple mode
 	if *noTUI {
-		for _, p := range providers {
-			runSimpleMode(p)
-		}
+		runSimpleMode(p)
 		return
 	}
 
 	// Run TUI
-	m := tui.NewModel(providers...)
-	p := tea.NewProgram(m, tea.WithAltScreen())
-	if _, err := p.Run(); err != nil {
+	m := tui.NewModel(p)
+	if _, err := tea.NewProgram(m, tea.WithAltScreen()).Run(); err != nil {
 		fmt.Fprintf(os.Stderr, "Error: %v\n", err)
 		os.Exit(1)
 	}

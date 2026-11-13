@@ -2,588 +2,113 @@ package graphql
 
 // GraphQL query templates for fetching merge request data
 
-const AuthoredMRsQuery = `
-query getAuthoredMergeRequests($first: Int = 50, $after: String) {
+// mergeRequestFields is the MergeRequest selection shared by every MR query, so the list
+// queries and the single-MR query always return the same data (see convertGraphQLMR).
+const mergeRequestFields = `
+        iid
+        id
+        title
+        description
+        webUrl
+        sourceBranch
+        targetBranch
+        state
+        draft
+        createdAt
+        updatedAt
+        conflicts
+        author {
+          username
+          name
+        }
+        project {
+          fullPath
+          name
+        }
+        headPipeline {
+          id
+          status
+          duration
+          createdAt
+          updatedAt
+          jobs {
+            nodes {
+              id
+              name
+              status
+              stage {
+                name
+              }
+            }
+          }
+        }
+        approvedBy {
+          nodes {
+            username
+          }
+        }
+        approved
+        approvalsLeft
+        approvalsRequired
+        userDiscussionsCount
+        reviewers {
+          nodes {
+            username
+            mergeRequestInteraction {
+              reviewState
+            }
+          }
+        }
+        discussions(first: 100) {
+          nodes {
+            id
+            resolved
+            resolvable
+            notes {
+              nodes {
+                author {
+                  username
+                  name
+                }
+                body
+                createdAt
+                system
+                resolvable
+                resolved
+              }
+            }
+          }
+        }
+`
+
+func scopeQuery(name, connection string) string {
+	return `
+query ` + name + `($first: Int = 50, $after: String) {
   currentUser {
     username
-    authoredMergeRequests(state: opened, first: $first, after: $after) {
+    ` + connection + `(state: opened, first: $first, after: $after) {
       pageInfo {
         hasNextPage
         endCursor
       }
-      nodes {
-        iid
-        id
-        title
-        description
-        webUrl
-        sourceBranch
-        targetBranch
-        state
-        draft
-        createdAt
-        updatedAt
-        conflicts
-        author {
-          username
-          name
-        }
-        project {
-          fullPath
-          name
-        }
-        headPipeline {
-          id
-          status
-          duration
-          createdAt
-          updatedAt
-          jobs {
-            nodes {
-              id
-              name
-              status
-              stage {
-                name
-              }
-            }
-          }
-        }
-        approvedBy {
-          nodes {
-            username
-          }
-        }
-        approved
-        approvalsLeft
-        approvalsRequired
-        userDiscussionsCount
-        reviewers {
-          nodes {
-            username
-            mergeRequestInteraction {
-              reviewState
-            }
-          }
-        }
-        discussions(first: 100) {
-          nodes {
-            id
-            resolved
-            resolvable
-            notes {
-              nodes {
-                author {
-                  username
-                  name
-                }
-                body
-                createdAt
-                system
-                resolvable
-                resolved
-              }
-            }
-          }
-        }
-      }
+      nodes {` + mergeRequestFields + `      }
     }
   }
 }
 `
-
-const AssignedMRsQuery = `
-query getAssignedMergeRequests($first: Int = 50, $after: String) {
-  currentUser {
-    username
-    assignedMergeRequests(state: opened, first: $first, after: $after) {
-      pageInfo {
-        hasNextPage
-        endCursor
-      }
-      nodes {
-        iid
-        id
-        title
-        description
-        webUrl
-        sourceBranch
-        targetBranch
-        state
-        draft
-        createdAt
-        updatedAt
-        conflicts
-        author {
-          username
-          name
-        }
-        project {
-          fullPath
-          name
-        }
-        headPipeline {
-          id
-          status
-          duration
-          createdAt
-          updatedAt
-          jobs {
-            nodes {
-              id
-              name
-              status
-              stage {
-                name
-              }
-            }
-          }
-        }
-        approvedBy {
-          nodes {
-            username
-          }
-        }
-        approved
-        approvalsLeft
-        approvalsRequired
-        userDiscussionsCount
-        reviewers {
-          nodes {
-            username
-            mergeRequestInteraction {
-              reviewState
-            }
-          }
-        }
-        discussions(first: 100) {
-          nodes {
-            id
-            resolved
-            resolvable
-            notes {
-              nodes {
-                author {
-                  username
-                  name
-                }
-                body
-                createdAt
-                system
-                resolvable
-                resolved
-              }
-            }
-          }
-        }
-      }
-    }
-  }
 }
-`
 
-const ReviewRequestedMRsQuery = `
-query getReviewRequestedMergeRequests($first: Int = 50, $after: String) {
-  currentUser {
-    username
-    reviewRequestedMergeRequests(state: opened, first: $first, after: $after) {
-      pageInfo {
-        hasNextPage
-        endCursor
-      }
-      nodes {
-        iid
-        id
-        title
-        description
-        webUrl
-        sourceBranch
-        targetBranch
-        state
-        draft
-        createdAt
-        updatedAt
-        conflicts
-        author {
-          username
-          name
-        }
-        project {
-          fullPath
-          name
-        }
-        headPipeline {
-          id
-          status
-          duration
-          createdAt
-          updatedAt
-          jobs {
-            nodes {
-              id
-              name
-              status
-              stage {
-                name
-              }
-            }
-          }
-        }
-        approvedBy {
-          nodes {
-            username
-          }
-        }
-        approved
-        approvalsLeft
-        approvalsRequired
-        userDiscussionsCount
-        reviewers {
-          nodes {
-            username
-            mergeRequestInteraction {
-              reviewState
-            }
-          }
-        }
-        discussions(first: 100) {
-          nodes {
-            id
-            resolved
-            resolvable
-            notes {
-              nodes {
-                author {
-                  username
-                  name
-                }
-                body
-                createdAt
-                system
-                resolvable
-                resolved
-              }
-            }
-          }
-        }
-      }
-    }
-  }
-}
-`
+var (
+	AuthoredMRsQuery        = scopeQuery("getAuthoredMergeRequests", "authoredMergeRequests")
+	AssignedMRsQuery        = scopeQuery("getAssignedMergeRequests", "assignedMergeRequests")
+	ReviewRequestedMRsQuery = scopeQuery("getReviewRequestedMergeRequests", "reviewRequestedMergeRequests")
+)
 
-// AllScopesQuery fetches MRs from all three scopes in a single query
-const AllScopesQuery = `
-query getAllMergeRequests($first: Int = 50) {
-  currentUser {
-    username
-    authoredMergeRequests(state: opened, first: $first) {
-      nodes {
-        iid
-        id
-        title
-        description
-        webUrl
-        sourceBranch
-        targetBranch
-        state
-        draft
-        createdAt
-        updatedAt
-        conflicts
-        author {
-          username
-          name
-        }
-        project {
-          fullPath
-          name
-        }
-        headPipeline {
-          id
-          status
-          duration
-          createdAt
-          updatedAt
-          jobs {
-            nodes {
-              id
-              name
-              status
-              stage {
-                name
-              }
-            }
-          }
-        }
-        approvedBy {
-          nodes {
-            username
-          }
-        }
-        approved
-        approvalsLeft
-        approvalsRequired
-        userDiscussionsCount
-        reviewers {
-          nodes {
-            username
-            mergeRequestInteraction {
-              reviewState
-            }
-          }
-        }
-        discussions(first: 100) {
-          nodes {
-            id
-            resolved
-            resolvable
-            notes {
-              nodes {
-                author {
-                  username
-                  name
-                }
-                body
-                createdAt
-                system
-                resolvable
-                resolved
-              }
-            }
-          }
-        }
-      }
-    }
-    assignedMergeRequests(state: opened, first: $first) {
-      nodes {
-        iid
-        id
-        title
-        description
-        webUrl
-        sourceBranch
-        targetBranch
-        state
-        draft
-        createdAt
-        updatedAt
-        conflicts
-        author {
-          username
-          name
-        }
-        project {
-          fullPath
-          name
-        }
-        headPipeline {
-          id
-          status
-          duration
-          createdAt
-          updatedAt
-          jobs {
-            nodes {
-              id
-              name
-              status
-              stage {
-                name
-              }
-            }
-          }
-        }
-        approvedBy {
-          nodes {
-            username
-          }
-        }
-        approved
-        approvalsLeft
-        approvalsRequired
-        userDiscussionsCount
-        reviewers {
-          nodes {
-            username
-            mergeRequestInteraction {
-              reviewState
-            }
-          }
-        }
-        discussions(first: 100) {
-          nodes {
-            id
-            resolved
-            resolvable
-            notes {
-              nodes {
-                author {
-                  username
-                  name
-                }
-                body
-                createdAt
-                system
-                resolvable
-                resolved
-              }
-            }
-          }
-        }
-      }
-    }
-    reviewRequestedMergeRequests(state: opened, first: $first) {
-      nodes {
-        iid
-        id
-        title
-        description
-        webUrl
-        sourceBranch
-        targetBranch
-        state
-        draft
-        createdAt
-        updatedAt
-        conflicts
-        author {
-          username
-          name
-        }
-        project {
-          fullPath
-          name
-        }
-        headPipeline {
-          id
-          status
-          duration
-          createdAt
-          updatedAt
-          jobs {
-            nodes {
-              id
-              name
-              status
-              stage {
-                name
-              }
-            }
-          }
-        }
-        approvedBy {
-          nodes {
-            username
-          }
-        }
-        approved
-        approvalsLeft
-        approvalsRequired
-        userDiscussionsCount
-        reviewers {
-          nodes {
-            username
-            mergeRequestInteraction {
-              reviewState
-            }
-          }
-        }
-        discussions(first: 100) {
-          nodes {
-            id
-            resolved
-            resolvable
-            notes {
-              nodes {
-                author {
-                  username
-                  name
-                }
-                body
-                createdAt
-                system
-                resolvable
-                resolved
-              }
-            }
-          }
-        }
-      }
-    }
-  }
-}
-`
-
-// Query for getting a single MR with full details
+// GetMRQuery fetches a single MR with the same fields as the list queries
 const GetMRQuery = `
 query getMergeRequest($projectPath: ID!, $iid: String!) {
   project(fullPath: $projectPath) {
-    mergeRequest(iid: $iid) {
-      iid
-      id
-      title
-      description
-      webUrl
-      sourceBranch
-      targetBranch
-      state
-      draft
-      createdAt
-      updatedAt
-      conflicts
-      author {
-        username
-        name
-      }
-      project {
-        fullPath
-        name
-      }
-      headPipeline {
-        id
-        status
-        duration
-        createdAt
-        updatedAt
-        webPath
-        jobs {
-          nodes {
-            name
-            status
-            stage
-          }
-        }
-      }
-      approvedBy {
-        nodes {
-          username
-        }
-      }
-      approved
-      approvalsLeft
-      approvalsRequired
-      userDiscussionsCount
-      discussions(first: 100) {
-        nodes {
-          resolved
-          resolvable
-          notes {
-            nodes {
-              author {
-                username
-                name
-              }
-              body
-              createdAt
-              system
-              resolvable
-              resolved
-            }
-          }
-        }
-      }
-    }
+    mergeRequest(iid: $iid) {` + mergeRequestFields + `    }
   }
 }
 `

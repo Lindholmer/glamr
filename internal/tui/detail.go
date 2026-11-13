@@ -18,24 +18,48 @@ const (
 
 // DetailView renders the split view for a selected MR
 type DetailView struct {
-	mr           provider.MergeRequest
-	jobs         []provider.PipelineJob
-	notes        []provider.MRNote
-	width        int
-	height       int
-	activePanel  Panel // Which panel is selected
-	jobsCursor   int   // Selected job index
-	notesCursor  int   // Selected note index
-	jobsScroll   int   // Scroll offset for jobs panel
-	notesScroll  int   // Scroll offset for notes panel
+	mr          provider.MergeRequest
+	jobs        []provider.PipelineJob
+	notes       []provider.MRNote
+	width       int
+	height      int
+	activePanel Panel // Which panel is selected
+	jobsCursor  int   // Selected job index
+	notesCursor int   // Selected note index
+	jobsScroll  int   // Scroll offset for jobs panel
+	notesScroll int   // Scroll offset for notes panel
 }
 
-func NewDetailView(mr provider.MergeRequest, width, height int) DetailView {
-	return DetailView{
-		mr:     mr,
-		width:  width,
-		height: height,
+// unresolvedNotes returns the notes shown in the notes panel: everything except resolved threads.
+func unresolvedNotes(notes []provider.MRNote) []provider.MRNote {
+	var result []provider.MRNote
+	for _, note := range notes {
+		if note.Resolvable && note.Resolved {
+			continue
+		}
+		result = append(result, note)
 	}
+	return result
+}
+
+// selectedJob returns the job under the jobs-panel cursor.
+func (d DetailView) selectedJob() (provider.PipelineJob, bool) {
+	if d.jobsCursor < 0 || d.jobsCursor >= len(d.jobs) {
+		return provider.PipelineJob{}, false
+	}
+	return d.jobs[d.jobsCursor], true
+}
+
+// truncate shortens s to at most width runes, ending in "..." when cut.
+func truncate(s string, width int) string {
+	r := []rune(s)
+	if len(r) <= width {
+		return s
+	}
+	if width <= 3 {
+		return string(r[:max(width, 0)])
+	}
+	return string(r[:width-3]) + "..."
 }
 
 func (d DetailView) Render() string {
@@ -84,9 +108,8 @@ func (d DetailView) Render() string {
 
 	// Build dynamic help based on selected job status and active panel
 	helpText := "a: approve/unapprove | D: toggle draft | f: files | d: full diff | o: open in browser | ↑/↓ j/k: navigate | ←/→ h/l: switch panel | r: refresh"
-	if d.activePanel == JobsPanel && len(d.jobs) > 0 {
+	if selectedJob, ok := d.selectedJob(); ok && d.activePanel == JobsPanel {
 		helpText += " | enter: view log"
-		selectedJob := d.jobs[d.jobsCursor]
 		if selectedJob.Status == "failed" {
 			helpText += " | t: retry"
 		} else if selectedJob.Status == "manual" {
@@ -136,7 +159,7 @@ func (d DetailView) renderJobs(width, height int, isActive bool) string {
 	}
 
 	// Calculate visible area - title takes 2 lines, padding takes some space
-	visibleLines := height - 4 // Account for padding and border
+	visibleLines := max(height-4, 1) // Account for padding and border
 
 	// Calculate scroll offset to keep cursor visible
 	if d.jobsCursor < d.jobsScroll {
@@ -198,10 +221,7 @@ func (d DetailView) renderJobs(width, height int, isActive bool) string {
 		}
 
 		// Truncate long job names
-		jobName := job.Name
-		if len(jobName) > maxJobWidth {
-			jobName = jobName[:maxJobWidth-3] + "..."
-		}
+		jobName := truncate(job.Name, maxJobWidth)
 
 		// Build line with consistent styling
 		jobStyle := lipgloss.NewStyle().Foreground(color)
@@ -243,13 +263,7 @@ func (d DetailView) renderNotes(width, height int, isActive bool) string {
 	title := lipgloss.NewStyle().Bold(true).Render("Comments & Discussions")
 
 	// Filter unresolved notes first to see if we have any
-	var filteredNotes []provider.MRNote
-	for _, note := range d.notes {
-		if note.Resolvable && note.Resolved {
-			continue
-		}
-		filteredNotes = append(filteredNotes, note)
-	}
+	filteredNotes := unresolvedNotes(d.notes)
 
 	if len(filteredNotes) == 0 {
 		// Show appropriate message: either no notes at all, or all are resolved
@@ -315,7 +329,7 @@ func (d DetailView) renderNotes(width, height int, isActive bool) string {
 		)
 
 		// Show only first 3 lines of body - press Enter to see full thread
-		bodyWidth := width - 4 // Account for padding and border
+		bodyWidth := max(width-4, 10) // Account for padding and border
 		body := note.Body
 		hasMore := false
 
