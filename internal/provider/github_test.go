@@ -496,7 +496,7 @@ func TestGitHubListMentions(t *testing.T) {
 	    {"id":"IC_yes","url":"https://github.com/octo/app/pull/4#issuecomment-1","author":{"login":"bob"},"body":"@me thoughts?","createdAt":"` + at(30*time.Minute) + `"}
 	  ]},
 	  "reviews":{"nodes":[{"id":"PRR_1","url":"u5","author":{"login":"carol"},"body":"LGTM but @me should check","createdAt":"` + at(10*time.Minute) + `"}]},
-	  "reviewThreads":{"nodes":[{"comments":{"nodes":[{"id":"RC_1","url":"u6","author":{"login":"dave"},"body":"@me here","createdAt":"` + at(5*time.Minute) + `"}]}}]}
+	  "reviewThreads":{"nodes":[{"id":"PRRT_1","comments":{"nodes":[{"id":"RC_1","url":"u6","author":{"login":"dave"},"body":"@me here","createdAt":"` + at(5*time.Minute) + `"}]}}]}
 	}]}}}`
 	fixture := writeFixture(t, "mentions.json", page)
 	logPath := installFakeGh(t, `cat "`+fixture+`"`)
@@ -519,6 +519,16 @@ func TestGitHubListMentions(t *testing.T) {
 	}
 	if mentions[2].MRID != "octo/app#4" || mentions[2].Ref() != "#4" || mentions[2].URL != "https://github.com/octo/app/pull/4#issuecomment-1" {
 		t.Errorf("mention = %+v", mentions[2])
+	}
+	// Inline comments are answered in their review thread; everything else with a new comment
+	for _, m := range mentions {
+		want := ""
+		if m.ID == "github:RC_1" {
+			want = "PRRT_1"
+		}
+		if m.ReplyTo != want || m.IID != 4 {
+			t.Errorf("%s: IID/ReplyTo = %d/%q, want 4/%q", m.ID, m.IID, m.ReplyTo, want)
+		}
 	}
 
 	calls := glabCalls(t, logPath)

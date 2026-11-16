@@ -117,7 +117,9 @@ glamr --host your.gitlab.host --no-tui
 |-----|--------|
 | `↑/↓` or `k/j` | Navigate mentions |
 | `Enter` | Read the full comment |
-| `a` | Mark read (hides it) |
+| `m` (while reading in full) | Reply: in the comment's thread, or as a new comment if it has none |
+| `a` | Mark read (hides it); in the read view, mark unread again |
+| `s` | Switch between unread mentions and the ones marked read (soonest to expire first) |
 | `o` | Open the comment in the browser |
 
 #### Detail View
@@ -184,7 +186,9 @@ The last tab lists every comment or description that @mentions you in an MR or P
 - **GitHub**: PRs matching `mentions:@me` updated in the window, scanned for comments, reviews, review comments and descriptions containing `@you`. Your own comments don't count.
 - `--repo` / `--github-repo` filter mentions too.
 
-`a` marks a mention read. Read mentions are stored in `~/.local/state/glamr/read_mentions.json` (or `$XDG_STATE_HOME/glamr/`), as the mention ID plus an `expires_at` time: the mention's time plus the window. Each refresh removes expired entries, since those mentions are out of the window anyway, so the file stays small. To see everything again, delete the file.
+Press `m` while reading a mention in full to reply. GitLab replies go into the comment's discussion and GitHub replies into the review thread; mentions without a thread (MR/PR descriptions, GitHub top-level comments and review summaries) get a new comment on the MR/PR. `Esc`, or posting, returns to the mention.
+
+`a` marks a mention read, and `s` shows the ones marked read, soonest to expire first, with each mark's expiry. Marks whose mention is outside the current window (e.g. after lowering `--mention-days`) are listed by ID. `a` in that view marks a mention unread again. Read mentions are stored in `~/.local/state/glamr/read_mentions.json` (or `$XDG_STATE_HOME/glamr/`), as the mention ID plus an `expires_at` time: the mention's time plus the window. Each refresh removes expired entries, since those mentions are out of the window anyway, so the file stays small. To see everything again, delete the file.
 
 ```json
 {

@@ -63,6 +63,7 @@ func (m *Model) switchTab(i int) {
 		return
 	}
 	m.activeTab = i
+	m.showingRead = false
 	m.mrs = nil // the Mentions tab has no MR list
 	if i < m.tabCount() {
 		m.mrs = m.tabMRs[i]

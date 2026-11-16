@@ -701,16 +701,22 @@ func (p *GitLabGraphQLProvider) ListMentions(since time.Time) ([]Mention, error)
 			if len(p.repos) > 0 && !p.repos[strings.ToLower(repo)] {
 				continue
 			}
-			mentions = append(mentions, Mention{
+			mention := Mention{
 				ID:        "gitlab:" + todo.ID,
 				Author:    todo.Author.Username,
 				Body:      todo.Body,
 				CreatedAt: todo.CreatedAt,
 				URL:       todo.TargetURL,
 				MRID:      repo + "!" + todo.Target.IID,
+				IID:       parseIID(todo.Target.IID),
 				MRTitle:   todo.Target.Title,
 				RepoName:  repo,
-			})
+			}
+			if todo.Note != nil {
+				// Same discussion ID format as the notes in the detail view
+				mention.ReplyTo = extractNumericID(todo.Note.Discussion.ID)
+			}
+			mentions = append(mentions, mention)
 		}
 		if reachedOlder || !todos.PageInfo.HasNextPage {
 			break

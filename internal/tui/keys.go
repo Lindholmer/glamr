@@ -37,10 +37,10 @@ func (m Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	}
 
 	switch {
+	case m.showingNoteThread: // may sit on top of a mention's full-read view
+		return m.handleNoteThreadKey(key)
 	case m.showingDiff:
 		return m.handleDiffKey(key)
-	case m.showingNoteThread:
-		return m.handleNoteThreadKey(key)
 	case m.showingFiles && m.filesView != nil:
 		return m.handleFilesKey(key)
 	case m.showingDetail && m.detailView != nil:
@@ -54,6 +54,10 @@ func (m Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 func (m Model) handleReplyKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	switch msg.Type {
 	case tea.KeyEsc:
+		if m.mentionReply != nil {
+			m.closeMentionReply() // back to the mention
+			return m, nil
+		}
 		m.composingReply = false
 		m.replyInput = ""
 		if m.selectedNote.ID == "" {
@@ -90,14 +94,16 @@ func (m Model) handleReplyKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 // handleEsc closes the top-most view.
 func (m Model) handleEsc() (tea.Model, tea.Cmd) {
 	switch {
+	case m.showingNoteThread:
+		m.showingNoteThread = false
+		m.selectedNote = provider.MRNote{}
+		m.mentionReply = nil
 	case m.showingDiff:
 		m.showingDiff = false
 		m.diffContent = ""
 		m.diffTitle = ""
 		m.diffScroll = 0
-	case m.showingNoteThread:
-		m.showingNoteThread = false
-		m.selectedNote = provider.MRNote{}
+		m.viewingMention = nil
 	case m.showingFiles:
 		m.showingFiles = false
 		m.filesView = nil
@@ -137,6 +143,10 @@ func scrollBy(key string, offset, limit int) (int, bool) {
 
 // handleDiffKey scrolls the diff / job log viewer.
 func (m Model) handleDiffKey(key string) (tea.Model, tea.Cmd) {
+	if key == "m" && m.viewingMention != nil {
+		m.startMentionReply()
+		return m, nil
+	}
 	if offset, ok := scrollBy(key, m.diffScroll, m.diffMaxScroll()); ok {
 		m.diffScroll = offset
 		return m, nil

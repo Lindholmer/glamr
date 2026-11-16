@@ -212,3 +212,137 @@ func TestMentionsRenderOnSmallTerminals(t *testing.T) {
 		}
 	}
 }
+
+func TestReplyToMention(t *testing.T) {
+	inThread := testMention("gitlab:1", "alice", time.Hour, "team/app!5")
+	inThread.IID, inThread.ReplyTo = 5, "disc123"
+	inDescription := testMention("gitlab:2", "bob", 2*time.Hour, "team/app!6")
+	inDescription.IID = 6
+	gitlab := &fakeProvider{mentions: []provider.Mention{inThread, inDescription}}
+	github := &fakeProvider{name: "GitHub", mentions: []provider.Mention{}}
+	m := NewModel(gitlab, github, nil, 0)
+	m, _ = send(t, m, tea.WindowSizeMsg{Width: 140, Height: 40})
+	m, _ = send(t, m, fetchTabs(m)())
+
+	// Read the first mention in full, press m, type, post
+	m, _ = press(t, m, "7", "enter")
+	if !strings.Contains(m.View(), "m: reply") {
+		t.Error("the full-read view should offer m: reply")
+	}
+	m, _ = press(t, m, "m")
+	if !m.composingReply || !strings.Contains(m.View(), "Reply to @alice - !5 Some MR") || !strings.Contains(m.View(), "@me please look at this") {
+		t.Fatalf("m should open the reply box with the mention shown:\n%s", m.View())
+	}
+	m, cmd := press(t, m, "o", "k", "enter")
+	m = run(t, m, cmd)
+
+	if m.showingNoteThread || m.mentionReply != nil || !m.showingDiff || m.viewingMention == nil {
+		t.Error("after posting, glamr should be back on the mention's full-read view")
+	}
+
+	// Esc cancels a reply and also returns to the mention
+	m, _ = press(t, m, "m", "x", "esc")
+	if m.showingNoteThread || m.composingReply || !m.showingDiff {
+		t.Error("esc should cancel the reply and return to the mention")
+	}
+
+	// A mention in the description has no thread: the reply is a new comment
+	m, _ = press(t, m, "esc", "j", "enter", "m")
+	if !strings.Contains(m.View(), "Reply to @bob (new comment)") {
+		t.Errorf("description mention reply should be a new comment:\n%s", m.View())
+	}
+	m, cmd = press(t, m, "h", "i", "enter")
+	m = run(t, m, cmd)
+
+	want := []string{"reply team/app!5 disc123 ok", "note team/app!6 hi"}
+	if got := gitlab.Calls(); strings.Join(got, "|") != strings.Join(want, "|") {
+		t.Errorf("GitLab calls = %v, want %v", got, want)
+	}
+	if len(github.Calls()) != 0 {
+		t.Error("GitLab mentions must not be answered through GitHub")
+	}
+}
+
+func TestReplyToGitHubMentionUsesGitHub(t *testing.T) {
+	mention := testMention("github:IC_1", "carol", time.Hour, "octo/app#9")
+	mention.IID, mention.RepoName = 9, "octo/app"
+	gitlab := &fakeProvider{}
+	github := &fakeProvider{name: "GitHub", mentions: []provider.Mention{mention}}
+	m := NewModel(gitlab, github, nil, 0)
+	m, _ = send(t, m, tea.WindowSizeMsg{Width: 140, Height: 40})
+	m, _ = send(t, m, fetchTabs(m)())
+
+	m, _ = press(t, m, "7", "enter", "m", "y")
+	m, cmd := press(t, m, "enter")
+	run(t, m, cmd)
+
+	// fakeProvider formats notes as repo!iid whatever the forge
+	if got := github.Calls(); len(got) != 1 || got[0] != "note octo/app!9 y" {
+		t.Errorf("GitHub calls = %v", got)
+	}
+	if len(gitlab.Calls()) != 0 {
+		t.Errorf("GitHub mention answered through GitLab: %v", gitlab.Calls())
+	}
+}
+
+func TestReadView(t *testing.T) {
+	reads := readlist.New()
+	soon := testMention("gitlab:soon", "alice", 6*24*time.Hour, "team/app!1") // expires in ~1 day
+	later := testMention("gitlab:later", "bob", time.Hour, "team/app!2")      // expires in ~7 days
+	unread := testMention("gitlab:unread", "carol", 2*time.Hour, "team/app!3")
+	m := mentionsModel(t, reads, 0, []provider.Mention{soon, later, unread}, nil)
+	m, _ = press(t, m, "4")
+
+	// Mark later, then soon read (in list order: later, unread, soon)
+	m, _ = press(t, m, "a") // later
+	m, _ = press(t, m, "j", "a")
+	if len(m.mentions) != 1 || m.mentions[0].ID != "gitlab:unread" {
+		t.Fatalf("unread = %+v", m.mentions)
+	}
+
+	// An old mark whose mention isn't loaded (e.g. outside a shorter window)
+	_ = reads.MarkRead("gitlab:gone", time.Now().Add(3*24*time.Hour))
+	m.rebuildMentions()
+
+	m, _ = press(t, m, "s")
+	if !m.showingRead || !strings.Contains(m.View(), "Mentions marked read (soonest to expire first)") {
+		t.Fatal("s should show the read mentions")
+	}
+	var order []string
+	for _, r := range m.readMentions {
+		order = append(order, r.mention.ID)
+	}
+	if got := strings.Join(order, ","); got != "gitlab:soon,gitlab:gone,gitlab:later" {
+		t.Errorf("read order = %s, want soonest expiry first", got)
+	}
+	view := m.View()
+	if !strings.Contains(view, "mark expires") || !strings.Contains(view, "not loaded: outside the current window") {
+		t.Errorf("read view should show expiry and unloaded marks:\n%s", view)
+	}
+
+	// Enter reads it; enter on an unloaded mark does nothing
+	m, _ = press(t, m, "enter")
+	if !m.showingDiff || !strings.Contains(m.diffContent, "@alice") {
+		t.Error("enter should open a read mention in full")
+	}
+	m, _ = press(t, m, "esc", "j", "enter")
+	if m.showingDiff {
+		t.Error("an unloaded mark has nothing to show")
+	}
+
+	// a marks unread again
+	m, _ = press(t, m, "k", "a")
+	if reads.IsRead("gitlab:soon") || len(m.readMentions) != 2 {
+		t.Errorf("a in the read view should mark unread: %+v", m.readMentions)
+	}
+	m, _ = press(t, m, "s")
+	if m.showingRead || len(m.mentions) != 2 {
+		t.Errorf("back to unread: showingRead=%v unread=%d", m.showingRead, len(m.mentions))
+	}
+
+	// Switching tabs leaves the read view
+	m, _ = press(t, m, "s", "1", "4")
+	if m.showingRead {
+		t.Error("switching tabs should reset to the unread view")
+	}
+}

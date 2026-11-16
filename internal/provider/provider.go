@@ -166,8 +166,10 @@ type Mention struct {
 	CreatedAt time.Time
 	URL       string // Link to the comment itself
 	MRID      string // ID of the MR/PR, as in MergeRequest.ID
+	IID       int    // MR/PR number
 	MRTitle   string
 	RepoName  string
+	ReplyTo   string // Thread to reply in (for Provider.ReplyToNote); "" means post a new comment
 }
 
 // Ref is the MR/PR reference ("!42" or "#42"), as MergeRequest.Ref.
