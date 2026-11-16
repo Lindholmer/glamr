@@ -129,6 +129,12 @@ query getMentionTodos($first: Int = 50, $after: String) {
         createdAt
         body
         targetUrl
+        note {
+          id
+          discussion {
+            id
+          }
+        }
         author {
           username
         }

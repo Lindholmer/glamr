@@ -98,3 +98,35 @@ func TestInMemoryList(t *testing.T) {
 		t.Errorf("in-memory MarkRead = %v, IsRead = %v", err, l.IsRead("x"))
 	}
 }
+
+func TestEntriesSortedByExpiry(t *testing.T) {
+	l := New()
+	base := time.Date(2026, 11, 20, 0, 0, 0, 0, time.UTC)
+	_ = l.MarkRead("late", base.Add(48*time.Hour))
+	_ = l.MarkRead("soon", base)
+	_ = l.MarkRead("b-mid", base.Add(time.Hour))
+	_ = l.MarkRead("a-mid", base.Add(time.Hour))
+
+	var ids []string
+	for _, e := range l.Entries() {
+		ids = append(ids, e.ID)
+	}
+	if got := strings.Join(ids, ","); got != "soon,a-mid,b-mid,late" {
+		t.Errorf("Entries order = %s", got)
+	}
+}
+
+func TestUnmark(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "read.json")
+	l, _ := Load(path)
+	_ = l.MarkRead("x", time.Now().Add(time.Hour))
+	if err := l.Unmark("x"); err != nil || l.IsRead("x") {
+		t.Fatalf("Unmark: err=%v IsRead=%v", err, l.IsRead("x"))
+	}
+	if reloaded, _ := Load(path); reloaded.IsRead("x") {
+		t.Error("Unmark should be saved")
+	}
+	if err := l.Unmark("never-marked"); err != nil {
+		t.Error("unmarking an unknown ID is a no-op")
+	}
+}

@@ -150,13 +150,19 @@ type TodoConnection struct {
 }
 
 type Todo struct {
-	ID        string      `json:"id"`
-	CreatedAt time.Time   `json:"createdAt"`
-	Body      string      `json:"body"`
-	TargetURL string      `json:"targetUrl"`
-	Author    User        `json:"author"`
-	Project   ProjectInfo `json:"project"`
-	Target    struct {
+	ID        string    `json:"id"`
+	CreatedAt time.Time `json:"createdAt"`
+	Body      string    `json:"body"`
+	TargetURL string    `json:"targetUrl"`
+	Note      *struct {
+		ID         string `json:"id"`
+		Discussion struct {
+			ID string `json:"id"`
+		} `json:"discussion"`
+	} `json:"note"` // nil for mentions in the MR description
+	Author  User        `json:"author"`
+	Project ProjectInfo `json:"project"`
+	Target  struct {
 		IID   string `json:"iid"`
 		Title string `json:"title"`
 	} `json:"target"`

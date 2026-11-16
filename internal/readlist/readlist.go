@@ -85,6 +85,30 @@ func (l *List) MarkRead(id string, expiresAt time.Time) error {
 	return l.Save()
 }
 
+// Unmark removes a mention from the list (marks it unread again) and saves the list.
+func (l *List) Unmark(id string) error {
+	if _, ok := l.entries[id]; !ok {
+		return nil
+	}
+	delete(l.entries, id)
+	return l.Save()
+}
+
+// Entries returns all entries, soonest to expire first.
+func (l *List) Entries() []Entry {
+	entries := make([]Entry, 0, len(l.entries))
+	for id, expires := range l.entries {
+		entries = append(entries, Entry{ID: id, ExpiresAt: expires})
+	}
+	sort.Slice(entries, func(i, j int) bool {
+		if !entries[i].ExpiresAt.Equal(entries[j].ExpiresAt) {
+			return entries[i].ExpiresAt.Before(entries[j].ExpiresAt)
+		}
+		return entries[i].ID < entries[j].ID
+	})
+	return entries
+}
+
 // Prune removes entries that expired before now and saves the list if anything changed.
 func (l *List) Prune(now time.Time) error {
 	changed := false

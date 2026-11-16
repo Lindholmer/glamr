@@ -26,6 +26,10 @@ type Model struct {
 	mrs               []provider.MergeRequest // MRs of the active tab (nil on the Mentions tab)
 	forgeMentions     [2][]provider.Mention   // Fetched mentions per forge (see forgeProviders)
 	mentions          []provider.Mention      // Unread mentions, newest first
+	readMentions      []readMention           // Mentions marked read, soonest to expire first
+	showingRead       bool                    // Mentions tab shows the read ones ('s')
+	viewingMention    *provider.Mention       // Mention open in the full-read view
+	mentionReply      *provider.Mention       // Mention being replied to ('m' in the full-read view)
 	readList          *readlist.List          // Mentions marked read (persisted)
 	mentionWindow     time.Duration
 	cursor            int
@@ -300,6 +304,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.composingReply = false
 		m.replyInput = ""
 		m.selectedNote = provider.MRNote{}
+		m.mentionReply = nil // back to the mention being read
 
 		if p := m.selectedProvider(); m.showingDetail && m.detailView != nil && p != nil {
 			return m, fetchDetailData(p, m.detailView.mr)
@@ -315,14 +320,14 @@ func (m Model) View() string {
 		return errorStyle.Render(fmt.Sprintf("Error: %v\n\nPress any key to continue, q to quit", m.err))
 	}
 
+	// Note thread first: replying to a mention opens it on top of the mention's full-read view
+	if m.showingNoteThread {
+		return m.renderNoteThread()
+	}
+
 	// Show diff if active
 	if m.showingDiff {
 		return m.renderDiff()
-	}
-
-	// Show note thread if active
-	if m.showingNoteThread {
-		return m.renderNoteThread()
 	}
 
 	// Show files view if active
@@ -338,7 +343,7 @@ func (m Model) View() string {
 	// Header
 	var header string
 	if m.onMentionsTab() {
-		header = headerStyle.Render(fmt.Sprintf("glamr - Mentions (last %d days)", m.mentionDays()))
+		header = headerStyle.Render(m.mentionsHeader())
 	} else {
 		p := m.tabProvider(m.activeTab)
 		header = headerStyle.Render(fmt.Sprintf("glamr - %s %s %s", p.Name(), scopeName(tabScope(m.activeTab)), itemsName(p)))
@@ -368,7 +373,7 @@ func (m Model) View() string {
 	// Help
 	help := helpStyle.Render(fmt.Sprintf("↑/↓: navigate | enter: details | a: approve/unapprove | D: toggle draft | o: open in browser | 1-%d: switch tab | r: refresh | q: quit", m.mentionsTab()+1))
 	if m.onMentionsTab() {
-		help = helpStyle.Render(fmt.Sprintf("↑/↓: navigate | enter: read in full | a: mark read | o: open comment in browser | 1-%d: switch tab | r: refresh | q: quit", m.mentionsTab()+1))
+		help = helpStyle.Render(m.mentionsHelp())
 	}
 
 	return lipgloss.JoinVertical(
@@ -920,6 +925,9 @@ func sortReviewingMRs(mrs []provider.MergeRequest) []provider.MergeRequest {
 // selectedMR returns the MR being acted on: the one open in the detail view (which stays
 // correct even if a background refresh reorders the list), else the highlighted list item.
 func (m Model) selectedMR() (provider.MergeRequest, bool) {
+	if r := m.mentionReply; r != nil {
+		return provider.MergeRequest{ID: r.MRID, IID: r.IID, Title: r.MRTitle, RepoName: r.RepoName}, true
+	}
 	if m.showingDetail && m.detailView != nil {
 		return m.detailView.mr, true
 	}
@@ -932,6 +940,9 @@ func (m Model) selectedMR() (provider.MergeRequest, bool) {
 // selectedProvider returns the provider that owns the selected MR: the detail view's,
 // else the active tab's.
 func (m Model) selectedProvider() provider.Provider {
+	if m.mentionReply != nil {
+		return m.mentionProvider(*m.mentionReply)
+	}
 	if m.showingDetail && m.detailView != nil && m.detailView.provider != nil {
 		return m.detailView.provider
 	}
@@ -1005,7 +1016,11 @@ func (m Model) renderDiff() string {
 
 	diffContent := diffStyle.Render(strings.Join(visibleLines, "\n"))
 
-	help := helpStyle.Render("↑/↓ j/k: scroll | shift+↑/↓: scroll 20 lines | home/end: top/bottom | esc: back | q: quit")
+	helpText := "↑/↓ j/k: scroll | shift+↑/↓: scroll 20 lines | home/end: top/bottom | esc: back | q: quit"
+	if m.viewingMention != nil {
+		helpText = "↑/↓ j/k: scroll | shift+↑/↓: scroll 20 lines | home/end: top/bottom | m: reply | esc: back | q: quit"
+	}
+	help := helpStyle.Render(helpText)
 
 	return lipgloss.JoinVertical(
 		lipgloss.Left,
@@ -1030,7 +1045,8 @@ func (m Model) noteThreadVisibleLines() int {
 func (m Model) noteThreadLines() []string {
 	var allLines []string
 
-	if m.selectedNote.ID != "" {
+	// Show the comment being answered (a mention may have no thread to reply in)
+	if m.selectedNote.ID != "" || m.mentionReply != nil {
 		authorStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("#00ffff")).Bold(true)
 		timeStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("#888888"))
 
@@ -1070,9 +1086,14 @@ func (m Model) renderNoteThread() string {
 	mr, _ := m.selectedMR()
 
 	var header string
-	if m.selectedNote.ID == "" {
+	switch {
+	case m.mentionReply != nil && m.selectedNote.ID == "":
+		header = headerStyle.Render(fmt.Sprintf("Reply to @%s (new comment) - %s %s", m.mentionReply.Author, mr.Ref(), mr.Title))
+	case m.mentionReply != nil:
+		header = headerStyle.Render(fmt.Sprintf("Reply to @%s - %s %s", m.mentionReply.Author, mr.Ref(), mr.Title))
+	case m.selectedNote.ID == "":
 		header = headerStyle.Render(fmt.Sprintf("New Note - %s %s", mr.Ref(), mr.Title))
-	} else {
+	default:
 		header = headerStyle.Render(fmt.Sprintf("Discussion - %s %s", mr.Ref(), mr.Title))
 	}
 

@@ -833,7 +833,7 @@ query($q: String!, $first: Int!, $after: String) {
       repository { nameWithOwner }
       comments(last: 100) { nodes { id url author { login } body createdAt } }
       reviews(last: 50) { nodes { id url author { login } body createdAt } }
-      reviewThreads(last: 50) { nodes { comments(first: 50) { nodes { id url author { login } body createdAt } } } }
+      reviewThreads(last: 50) { nodes { id comments(first: 50) { nodes { id url author { login } body createdAt } } } }
     } }
   }
 }
@@ -866,6 +866,7 @@ type ghMentionPR struct {
 	} `json:"reviews"`
 	ReviewThreads struct {
 		Nodes []struct {
+			ID       string `json:"id"`
 			Comments struct {
 				Nodes []ghMentionComment `json:"nodes"`
 			} `json:"comments"`
@@ -921,7 +922,8 @@ func (p *GitHubProvider) mentionsInPR(pr ghMentionPR, since time.Time) []Mention
 	mrID := fmt.Sprintf("%s#%d", repo, pr.Number)
 
 	var mentions []Mention
-	consider := func(id, url, author, body string, created time.Time) {
+	// replyTo is the review thread for inline comments; other mentions are answered with a new comment
+	consider := func(id, url, author, body string, created time.Time, replyTo string) {
 		// Mentioning yourself isn't a mention (GitLab doesn't create to-dos for it either)
 		if created.Before(since) || author == p.username || !mentionsUser(body, p.username) {
 			return
@@ -933,21 +935,23 @@ func (p *GitHubProvider) mentionsInPR(pr ghMentionPR, since time.Time) []Mention
 			CreatedAt: created,
 			URL:       url,
 			MRID:      mrID,
+			IID:       pr.Number,
 			MRTitle:   pr.Title,
 			RepoName:  repo,
+			ReplyTo:   replyTo,
 		})
 	}
 
-	consider(pr.ID+":description", pr.URL, pr.Author.Login, pr.Body, pr.CreatedAt)
+	consider(pr.ID+":description", pr.URL, pr.Author.Login, pr.Body, pr.CreatedAt, "")
 	for _, c := range pr.Comments.Nodes {
-		consider(c.ID, c.URL, c.Author.Login, c.Body, c.CreatedAt)
+		consider(c.ID, c.URL, c.Author.Login, c.Body, c.CreatedAt, "")
 	}
 	for _, c := range pr.Reviews.Nodes {
-		consider(c.ID, c.URL, c.Author.Login, c.Body, c.CreatedAt)
+		consider(c.ID, c.URL, c.Author.Login, c.Body, c.CreatedAt, "")
 	}
 	for _, t := range pr.ReviewThreads.Nodes {
 		for _, c := range t.Comments.Nodes {
-			consider(c.ID, c.URL, c.Author.Login, c.Body, c.CreatedAt)
+			consider(c.ID, c.URL, c.Author.Login, c.Body, c.CreatedAt, t.ID)
 		}
 	}
 	return mentions
