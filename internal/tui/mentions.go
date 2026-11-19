@@ -24,7 +24,7 @@ type readMention struct {
 	loaded    bool
 }
 
-// The Mentions tab comes after the forge tabs: key 4 (GitLab only) or 7 (with GitHub).
+// The Mentions tab comes after the forge tabs: key 4 with one forge, 7 with both.
 func (m Model) mentionsTab() int { return m.tabCount() }
 
 func (m Model) onMentionsTab() bool { return m.activeTab == m.mentionsTab() }
@@ -43,18 +43,21 @@ func (m Model) listLen() int {
 
 // forgeProviders are the providers whose mentions are listed; index i fills forgeMentions[i].
 func (m Model) forgeProviders() []provider.Provider {
-	if m.github != nil {
-		return []provider.Provider{m.gitlab, m.github}
-	}
-	return []provider.Provider{m.gitlab}
+	return m.forges
 }
 
 // mentionProvider is the forge a mention came from (by its ID prefix).
 func (m Model) mentionProvider(mention provider.Mention) provider.Provider {
-	if strings.HasPrefix(mention.ID, "github:") && m.github != nil {
-		return m.github
+	forge := "GitLab"
+	if strings.HasPrefix(mention.ID, "github:") {
+		forge = "GitHub"
 	}
-	return m.gitlab
+	for _, p := range m.forges {
+		if p.Name() == forge {
+			return p
+		}
+	}
+	return nil
 }
 
 // rebuildMentions derives both Mentions views from the fetched mentions and the read list:

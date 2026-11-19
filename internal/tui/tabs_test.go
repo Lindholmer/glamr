@@ -6,6 +6,7 @@ import (
 	"reflect"
 	"strings"
 	"testing"
+	"time"
 
 	tea "github.com/charmbracelet/bubbletea"
 	"glamr/internal/provider"
@@ -184,5 +185,44 @@ func TestRenderApprovalLine(t *testing.T) {
 		if got := renderApprovalLine(tt.mr, tt.reviewing); !strings.Contains(got, tt.want) {
 			t.Errorf("%s: got %q, want it to contain %q", tt.name, got, tt.want)
 		}
+	}
+}
+
+func TestGitHubOnly(t *testing.T) {
+	github := &fakeProvider{name: "GitHub", mrs: map[provider.Scope][]provider.MergeRequest{
+		provider.ScopeAuthored: {ghMR(1, "mine")},
+	}}
+	m := NewModel(nil, github, nil, 0)
+	m, _ = send(t, m, tea.WindowSizeMsg{Width: 140, Height: 40})
+
+	msg := fetchTabs(m)().(tabsFetchedMsg)
+	if msg.count != 3 || msg.mentionCount != 1 || len(msg.results[0].mrs) != 1 {
+		t.Fatalf("GitHub only should fetch 3 tabs + 1 mentions source, got %d/%d", msg.count, msg.mentionCount)
+	}
+	m, _ = send(t, m, msg)
+
+	tabs := m.renderTabs()
+	if strings.Contains(tabs, "GitLab") || strings.Contains(tabs, "GitHub:") || !strings.Contains(tabs, "4. Mentions") {
+		t.Errorf("GitHub-only tabs should be 1-3 plus Mentions, without forge labels: %q", tabs)
+	}
+	if view := m.View(); !strings.Contains(view, "glamr - GitHub Authored PRs") || !strings.Contains(view, "#1 mine") {
+		t.Errorf("tab 1 should be GitHub Authored:\n%s", view)
+	}
+
+	// Actions go to GitHub
+	_, cmd := press(t, m, "a")
+	cmd()
+	if got := github.Calls(); len(got) != 1 || got[0] != "approve octo/app#1" {
+		t.Errorf("GitHub calls = %v", got)
+	}
+
+	// Mentions are on 4 and replies use GitHub
+	mention := testMention("github:IC_1", "carol", time.Hour, "octo/app#1")
+	mention.IID = 1
+	if p := m.mentionProvider(mention); p != provider.Provider(github) {
+		t.Errorf("mentionProvider = %v, want GitHub", p)
+	}
+	if m, _ = press(t, m, "4"); !m.onMentionsTab() {
+		t.Error("4 should be Mentions with one forge")
 	}
 }

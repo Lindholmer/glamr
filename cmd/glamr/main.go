@@ -14,14 +14,15 @@ import (
 
 func main() {
 	// Parse flags
-	host := flag.String("host", "", "GitLab host (e.g. gitlab.example.com). Defaults to glab's configured host.")
+	withGitLab := flag.Bool("gitlab", false, "Show GitLab merge requests, using the glab CLI")
+	host := flag.String("host", "", "GitLab host (e.g. gitlab.example.com). Defaults to glab's configured host. Implies --gitlab.")
 	var repos stringList
-	flag.Var(&repos, "repo", "Repository to query (can be specified multiple times). If omitted, queries all accessible repos.")
+	flag.Var(&repos, "repo", "GitLab repository to query (can be specified multiple times). If omitted, all accessible repos. Implies --gitlab.")
 	noTUI := flag.Bool("no-tui", false, "Disable TUI and print to stdout")
-	withGitHub := flag.Bool("github", false, "Also show GitHub pull requests (tabs 4-6), using the gh CLI")
-	githubHost := flag.String("github-host", "", "GitHub Enterprise host. Defaults to gh's configured host (github.com).")
+	withGitHub := flag.Bool("github", false, "Show GitHub pull requests, using the gh CLI")
+	githubHost := flag.String("github-host", "", "GitHub Enterprise host. Defaults to gh's configured host (github.com). Implies --github.")
 	var githubRepos stringList
-	flag.Var(&githubRepos, "github-repo", "GitHub repository to include (owner/name, can be repeated). If omitted, all repos.")
+	flag.Var(&githubRepos, "github-repo", "GitHub repository to include (owner/name, can be repeated). If omitted, all repos. Implies --github.")
 	mentionDays := flag.Int("mention-days", 7, "How many days back the Mentions tab looks")
 	flag.Parse()
 
@@ -30,30 +31,44 @@ func main() {
 		os.Exit(1)
 	}
 
-	// --repo filters the user's MRs client-side, so a single provider serves any number of repos
-	gitlab, err := provider.NewGitLabGraphQLProvider(*host, repos...)
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "Error: %v\n", err)
-		os.Exit(1)
+	useGitLab := forgeEnabled(*withGitLab, *host, repos)
+	useGitHub := forgeEnabled(*withGitHub, *githubHost, githubRepos)
+	if !useGitLab && !useGitHub {
+		fmt.Fprintln(os.Stderr, "Nothing to show: pass --gitlab and/or --github (or a flag that implies them, e.g. --host or --github-repo).")
+		fmt.Fprintln(os.Stderr, "Run glamr --help for all flags.")
+		os.Exit(2)
 	}
 
-	// Typed as the interface so "no GitHub" is a real nil, not a nil *GitHubProvider
-	var github provider.Provider
-	if *withGitHub || *githubHost != "" || len(githubRepos) > 0 {
-		gh, err := provider.NewGitHubProvider(*githubHost, githubRepos...)
+	// Typed as the interface so a disabled forge is a real nil, not a nil pointer in an interface
+	var gitlab, github provider.Provider
+	if useGitLab {
+		// --repo filters the user's MRs client-side, so a single provider serves any number of repos
+		p, err := provider.NewGitLabGraphQLProvider(*host, repos...)
 		if err != nil {
 			fmt.Fprintf(os.Stderr, "Error: %v\n", err)
 			os.Exit(1)
 		}
-		github = gh
+		gitlab = p
+	}
+	if useGitHub {
+		p, err := provider.NewGitHubProvider(*githubHost, githubRepos...)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "Error: %v\n", err)
+			os.Exit(1)
+		}
+		github = p
 	}
 
 	// If no-tui flag, run in simple mode
 	if *noTUI {
-		runSimpleMode(gitlab)
-		if github != nil {
-			fmt.Println()
-			runSimpleMode(github)
+		for i, p := range []provider.Provider{gitlab, github} {
+			if p == nil {
+				continue
+			}
+			if i > 0 && gitlab != nil {
+				fmt.Println()
+			}
+			runSimpleMode(p)
 		}
 		return
 	}
@@ -76,6 +91,12 @@ func main() {
 		fmt.Fprintf(os.Stderr, "Error: %v\n", err)
 		os.Exit(1)
 	}
+}
+
+// forgeEnabled reports whether a forge should be queried: its flag is set, or one of its
+// host/repo flags is (they imply it).
+func forgeEnabled(flag bool, host string, repos []string) bool {
+	return flag || host != "" || len(repos) > 0
 }
 
 // stringList is a custom flag type for multiple values

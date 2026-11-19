@@ -8,7 +8,7 @@
 ## Features
 
 ### 📋 MR Management
-- **Tabs**: Authored, Assigned and Reviewing for GitLab (`1-3`), plus the same three for GitHub (`4-6`) with `--github`. All tabs are preloaded, so switching is instant
+- **Tabs**: Authored, Assigned and Reviewing for each forge you enable (`--gitlab`, `--github`, or both), plus a Mentions tab. All tabs are preloaded, so switching is instant
 - **Status at a glance**: pipeline status, approvals, conflicts and unresolved discussions
 - **Quick actions**: approve/revoke approval, toggle draft, open in browser
 - **Mentions**: one tab with every @mention of you in MRs and PRs from the last 7 days; mark them read with `a` (see [Mentions tab](#mentions-tab))
@@ -37,8 +37,8 @@
 
 ### Prerequisites
 - **Go 1.26+** (for building, see `go.mod`)
-- **[glab](https://gitlab.com/gitlab-org/cli)** - GitLab CLI, authenticated against your GitLab instance. glamr makes all API calls through `glab`, so it uses glab's credentials.
-- **[gh](https://cli.github.com/)** - GitHub CLI, only needed with `--github`. Authenticate with `gh auth login`.
+- **[glab](https://gitlab.com/gitlab-org/cli)** - GitLab CLI, needed with `--gitlab`. Authenticate against your GitLab instance; glamr makes its GitLab calls through `glab`, so it uses glab's credentials.
+- **[gh](https://cli.github.com/)** - GitHub CLI, needed with `--github`. Authenticate with `gh auth login`.
 - **[delta](https://github.com/dandavison/delta)** - optional, for syntax-highlighted diffs. glamr looks for `delta` on your `PATH`, then in `~/.local/bin/delta`. Without it, diffs are shown as plain text.
 
 ### Install delta (optional)
@@ -62,23 +62,28 @@ sudo mv glamr /usr/local/bin/
 
 ## Usage
 
-```bash
-# All MRs across every project you can access (uses glab's default host)
-glamr
+Each forge is only queried when you enable it: `--gitlab` and/or `--github`. Host and repo flags imply their forge, so `--host` alone enables GitLab. Running `glamr` with no forge enabled just prints a hint.
 
-# A specific GitLab host
+```bash
+# GitLab MRs across every project you can access (glab's default host)
+glamr --gitlab
+
+# A specific GitLab host (implies --gitlab)
 glamr --host your.gitlab.host
 
 # Only MRs from specific repositories
 glamr --host your.gitlab.host --repo org/project1 --repo org/project2
 
-# Also show GitHub pull requests (tabs 4-6)
+# GitHub pull requests only
+glamr --github
+
+# Both: GitLab tabs 1-3, GitHub tabs 4-6
 glamr --host your.gitlab.host --github
 
 # Only PRs from specific GitHub repositories (implies --github)
-glamr --host your.gitlab.host --github-repo octo/app --github-repo octo/lib
+glamr --github-repo octo/app --github-repo octo/lib
 
-# Print your authored MRs (and PRs) to stdout instead of starting the TUI
+# Print your authored MRs/PRs to stdout instead of starting the TUI
 glamr --host your.gitlab.host --no-tui
 ```
 
@@ -86,9 +91,10 @@ glamr --host your.gitlab.host --no-tui
 
 | Flag | Default | Description |
 |------|---------|-------------|
-| `--host` | glab's default host | GitLab hostname, e.g. `gitlab.example.com` |
-| `--repo` | all accessible repos | Limit to a repository (`group/project`). Repeat for several repos. |
-| `--github` | `false` | Add GitHub tabs (4-6) using the `gh` CLI |
+| `--gitlab` | `false` | Show GitLab merge requests, using the `glab` CLI |
+| `--host` | glab's default host | GitLab hostname, e.g. `gitlab.example.com` (implies `--gitlab`) |
+| `--repo` | all accessible repos | Limit GitLab to a repository (`group/project`). Repeat for several repos. Implies `--gitlab`. |
+| `--github` | `false` | Show GitHub pull requests, using the `gh` CLI |
 | `--github-host` | gh's default host | GitHub Enterprise hostname (implies `--github`) |
 | `--github-repo` | all repos | Limit GitHub tabs to a repository (`owner/name`). Repeat for several; filtered by GitHub's search, so it costs no extra calls. Implies `--github`. |
 | `--mention-days` | `7` | How many days back the Mentions tab looks |
@@ -103,9 +109,9 @@ glamr --host your.gitlab.host --no-tui
 |-----|--------|
 | `↑/↓` or `k/j` | Navigate MRs |
 | `Enter` | Open MR details |
-| `1` / `2` / `3` | GitLab Authored / Assigned / Reviewing tab |
-| `4` / `5` / `6` | GitHub Authored / Assigned / Reviewing tab (with `--github`) |
-| `4`, or `7` with `--github` | Mentions tab |
+| `1` / `2` / `3` | Authored / Assigned / Reviewing tab of the first forge (GitLab if enabled, else GitHub) |
+| `4` / `5` / `6` | GitHub Authored / Assigned / Reviewing tab, when both forges are enabled |
+| `4`, or `7` with both forges | Mentions tab |
 | `a` | Approve, or revoke your approval |
 | `D` | Toggle draft status |
 | `o` | Open MR in browser |
@@ -200,7 +206,7 @@ Press `m` while reading a mention in full to reply. GitLab replies go into the c
 
 ### GitHub pull requests
 
-With `--github`, tabs 4-6 list your open PRs (`author:@me`, `assignee:@me`, and PRs you're requested to review or have reviewed). They work like the GitLab tabs, with these differences:
+With `--github`, the GitHub tabs (4-6 next to GitLab, 1-3 on their own) list your open PRs (`author:@me`, `assignee:@me`, and PRs you're requested to review or have reviewed). They work like the GitLab tabs, with these differences:
 
 | | GitHub behaviour |
 |---|---|
@@ -231,7 +237,7 @@ The pipeline status is derived from its jobs: any failed job shows the pipeline 
 - **TUI layer** (`internal/tui/`) - [Bubble Tea](https://github.com/charmbracelet/bubbletea) model and views, styled with [Lipgloss](https://github.com/charmbracelet/lipgloss)
   - `model.go` - state, message handling, commands and the list/diff/thread views
   - `keys.go` - key handling, one handler per view
-  - `tabs.go` - the tab layout (3 GitLab tabs, 3 more for GitHub), parallel tab refresh
+  - `tabs.go` - the tab layout (3 tabs per enabled forge, GitLab first), parallel tab refresh
   - `mentions.go` - the Mentions tab
   - `detail.go`, `files.go` - detail and files views
 - **Provider layer** (`internal/provider/`) - the `Provider` interface and its implementations
