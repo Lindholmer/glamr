@@ -21,3 +21,22 @@ func TestStringListCollectsRepeatedFlags(t *testing.T) {
 		t.Errorf("String() = %q", got)
 	}
 }
+
+func TestForgeEnabled(t *testing.T) {
+	tests := []struct {
+		flag  bool
+		host  string
+		repos []string
+		want  bool
+	}{
+		{false, "", nil, false}, // nothing set: forge not queried
+		{true, "", nil, true},
+		{false, "gitlab.example.com", nil, true}, // host implies the forge
+		{false, "", []string{"team/app"}, true},  // repo implies the forge
+	}
+	for _, tt := range tests {
+		if got := forgeEnabled(tt.flag, tt.host, tt.repos); got != tt.want {
+			t.Errorf("forgeEnabled(%v, %q, %v) = %v, want %v", tt.flag, tt.host, tt.repos, got, tt.want)
+		}
+	}
+}

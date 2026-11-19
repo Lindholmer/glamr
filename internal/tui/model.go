@@ -19,8 +19,7 @@ import (
 )
 
 type Model struct {
-	gitlab            provider.Provider
-	github            provider.Provider                // nil unless --github
+	forges            []provider.Provider              // Enabled forges in tab order: GitLab, then GitHub
 	tabMRs            [maxTabs][]provider.MergeRequest // Cached MRs per tab (see tabs.go)
 	activeTab         int
 	mrs               []provider.MergeRequest // MRs of the active tab (nil on the Mentions tab)
@@ -113,7 +112,7 @@ type draftMsg struct {
 	err  error
 }
 
-// NewModel creates the TUI model. github may be nil, in which case only GitLab tabs are shown.
+// NewModel creates the TUI model. Either forge may be nil (not enabled), but not both.
 // reads persists mentions marked read (nil keeps them in memory only); mentionWindow is how far
 // back the Mentions tab looks (0 means DefaultMentionWindow).
 func NewModel(gitlab, github provider.Provider, reads *readlist.List, mentionWindow time.Duration) Model {
@@ -124,8 +123,7 @@ func NewModel(gitlab, github provider.Provider, reads *readlist.List, mentionWin
 		mentionWindow = DefaultMentionWindow
 	}
 	return Model{
-		gitlab:           gitlab,
-		github:           github,
+		forges:           enabledForges(gitlab, github),
 		readList:         reads,
 		mentionWindow:    mentionWindow,
 		cache:            cache.NewCache(5 * time.Minute), // 5 minute cache
@@ -133,6 +131,17 @@ func NewModel(gitlab, github provider.Provider, reads *readlist.List, mentionWin
 		loading:          true,
 		lastRefreshStart: time.Now(), // Init starts the first fetch
 	}
+}
+
+// enabledForges lists the non-nil providers in tab order.
+func enabledForges(gitlab, github provider.Provider) []provider.Provider {
+	var forges []provider.Provider
+	for _, p := range []provider.Provider{gitlab, github} {
+		if p != nil {
+			forges = append(forges, p)
+		}
+	}
+	return forges
 }
 
 func (m Model) Init() tea.Cmd {
@@ -405,7 +414,7 @@ func needsAttention(mrs []provider.MergeRequest) bool {
 func (m Model) renderTabs() string {
 	var tabs []string
 	for i := 0; i < m.tabCount(); i++ {
-		if m.github != nil && i%tabsPerForge == 0 {
+		if len(m.forges) > 1 && i%tabsPerForge == 0 {
 			// Label each forge's group of tabs when both are shown
 			tabs = append(tabs, forgeLabelStyle.Render(m.tabProvider(i).Name()+":"))
 		}

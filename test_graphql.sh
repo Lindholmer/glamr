@@ -43,12 +43,12 @@ fi
 
 echo ""
 echo "5. Testing GraphQL provider (simple mode)..."
-echo "   Running: ./glamr --no-tui"
+echo "   Running: ./glamr --gitlab --no-tui"
 echo ""
-./glamr --no-tui
+./glamr --gitlab --no-tui
 
 echo ""
 echo "=== All tests passed! ==="
 echo ""
 echo "To run the full TUI with GraphQL:"
-echo "  ./glamr"
+echo "  ./glamr --gitlab"

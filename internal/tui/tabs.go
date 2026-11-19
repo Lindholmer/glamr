@@ -10,7 +10,8 @@ import (
 	"glamr/internal/provider"
 )
 
-// The list has three GitLab tabs (keys 1-3) and, with --github, three GitHub tabs (keys 4-6).
+// Each enabled forge gets three tabs, GitLab first: with both forges GitLab is 1-3 and
+// GitHub 4-6; with one forge its tabs are 1-3. The Mentions tab comes after them.
 const (
 	tabsPerForge = 3
 	maxTabs      = 2 * tabsPerForge
@@ -18,20 +19,18 @@ const (
 
 var tabScopes = [tabsPerForge]provider.Scope{provider.ScopeAuthored, provider.ScopeAssigned, provider.ScopeReviewing}
 
-// tabCount is the number of tabs shown: GitLab's, plus GitHub's if enabled.
+// tabCount is the number of MR tabs: three per enabled forge.
 func (m Model) tabCount() int {
-	if m.github != nil {
-		return maxTabs
-	}
-	return tabsPerForge
+	return tabsPerForge * len(m.forges)
 }
 
 // tabProvider is the provider whose MRs a tab lists (and which performs their actions).
+// It's nil for the Mentions tab.
 func (m Model) tabProvider(i int) provider.Provider {
-	if i < tabsPerForge {
-		return m.gitlab
+	if i < 0 || i/tabsPerForge >= len(m.forges) {
+		return nil
 	}
-	return m.github
+	return m.forges[i/tabsPerForge]
 }
 
 func tabScope(i int) provider.Scope {
